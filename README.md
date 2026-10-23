@@ -13,7 +13,7 @@ The public test suite for **sill**, a native Windows Bash runtime for coding age
 
 ## CI
 
-- `conformance`: runs on every push, weekly, and on demand (with a release tag). Results are in the run summary and the `results` artifact.
+- `conformance`: runs on every push and weekly against the latest release, and on demand with a tag. The tag `nightly` is a prerelease build of sill's current source, published with a run against it. Results are in the run summary and the `results` artifact.
 - `agent-e2e`: runs on demand. Choose `claude`, `opencode` or `codex`.
 
 Both download sill's release with the `SILL_DOWNLOAD_TOKEN` secret. Workflows triggered from forks don't receive it, so they can't run against sill.

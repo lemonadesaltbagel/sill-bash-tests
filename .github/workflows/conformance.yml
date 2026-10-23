@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       sill_tag:
-        description: "sill release tag (empty = latest)"
+        description: "sill release tag (empty = latest release; nightly = current source)"
         default: ""
 
 permissions:
