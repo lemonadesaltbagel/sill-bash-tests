@@ -1,0 +1,70 @@
+name: conformance
+
+# sill (from its release) against Git Bash on a fresh windows-2025 runner: the conformance
+# suite, the packaged-distribution checks, and the shell smoke probes.
+on:
+  push:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      sill_tag:
+        description: "sill release tag (empty = latest)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      SILL_DOWNLOAD_TOKEN: ${{ secrets.SILL_DOWNLOAD_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get sill
+        id: sill
+        shell: pwsh
+        run: |
+          $bash = pwsh scripts/get-sill.ps1 -Tag "${{ inputs.sill_tag }}"
+          "bash=$bash" | Add-Content $env:GITHUB_OUTPUT
+          & $bash --version
+      - name: Build echoargs (MSVC)
+        shell: cmd
+        run: call lab\argv-live\build-echoargs.cmd "%RUNNER_TEMP%\echoargs.exe"
+      - name: Conformance suite (sill vs Git Bash)
+        shell: pwsh
+        run: |
+          python conformance\run.py --shell "sill=${{ steps.sill.outputs.bash }}" `
+            --shell "gitbash=C:\Program Files\Git\bin\bash.exe" `
+            --echoargs "$env:RUNNER_TEMP\echoargs.exe" --out conformance.json --report conformance.md
+          Get-Content conformance.md | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Distribution checks (no Git on PATH)
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          & "${{ steps.sill.outputs.bash }}" scripts/dist-check.sh 2>&1 | Tee-Object dist-check.txt
+          if ($LASTEXITCODE -ne 0) { throw "dist-check failed" }
+      - name: Smoke probes (sill vs Git Bash)
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\Program Files\Git\usr\bin;$env:PATH"
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\smoke" | Out-Null
+          python lab\brush-smoke\smoke.py --shell "sill=${{ steps.sill.outputs.bash }}" `
+            --shell "gitbash=C:\Program Files\Git\bin\bash.exe" --echoargs "$env:RUNNER_TEMP\echoargs.exe" `
+            --cwd "$env:RUNNER_TEMP\smoke" --out smoke.json --summary smoke.md
+          Get-Content smoke.md | Add-Content $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: results
+          path: |
+            conformance.json
+            conformance.md
+            dist-check.txt
+            smoke.json
+            smoke.md
+          if-no-files-found: warn

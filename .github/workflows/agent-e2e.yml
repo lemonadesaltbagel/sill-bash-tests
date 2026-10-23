@@ -1,0 +1,93 @@
+name: agent-e2e
+
+# Real coding agents (Claude Code, opencode, or Codex via a local LiteLLM proxy) through
+# DeepSeek's cheap model, on the same tasks, with sill, Git Bash or PowerShell as the shell.
+# Manual only. Transcripts are scrubbed of the key before upload.
+on:
+  workflow_dispatch:
+    inputs:
+      harness:
+        description: "claude, opencode or codex"
+        default: "claude"
+      tasks:
+        description: "Comma-separated task ids (empty = all)"
+        default: ""
+      reps:
+        description: "Repetitions per task"
+        default: "1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [sill, gitbash, powershell]
+    runs-on: windows-2025
+    timeout-minutes: 150
+    env:
+      SILL_DOWNLOAD_TOKEN: ${{ secrets.SILL_DOWNLOAD_TOKEN }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get sill
+        id: sill
+        shell: pwsh
+        run: |
+          $bash = pwsh scripts/get-sill.ps1
+          "bash=$bash" | Add-Content $env:GITHUB_OUTPUT
+      - name: Install the harness
+        shell: pwsh
+        run: |
+          switch ("${{ inputs.harness }}") {
+            'claude'   { npm install -g @anthropic-ai/claude-code@latest 2>&1 | Select-Object -Last 2; claude --version }
+            'opencode' { npm install -g opencode-ai@latest 2>&1 | Select-Object -Last 2; opencode --version }
+            'codex'    {
+              npm install -g @openai/codex@latest 2>&1 | Select-Object -Last 2; codex --version
+              python -m pip install -q "litellm[proxy]"
+              $litellm = Join-Path (Split-Path (Get-Command python).Source) 'Scripts\litellm.exe'
+              Start-Process -FilePath $litellm -ArgumentList '--config', "$PWD\scripts\lab-codex\litellm.yaml", '--port', '4000', '--host', '127.0.0.1' -WindowStyle Hidden
+              foreach ($i in 1..60) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:4000/health/liveliness -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 2 } }
+            }
+            default    { throw "unknown harness ${{ inputs.harness }}" }
+          }
+      - name: Run tasks
+        shell: pwsh
+        run: |
+          python lab/agent-e2e/run.py --env ${{ matrix.env }} --harness ${{ inputs.harness }} `
+            --sill-bash "${{ steps.sill.outputs.bash }}" --out "out\${{ matrix.env }}" `
+            "--tasks=${{ inputs.tasks }}" --reps ${{ inputs.reps }}
+          Get-Content "out\${{ matrix.env }}\summary.md" | Add-Content $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e-${{ matrix.env }}
+          retention-days: 14
+          path: |
+            out/${{ matrix.env }}/*.jsonl
+            out/${{ matrix.env }}/results.json
+            out/${{ matrix.env }}/summary.md
+
+  report:
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: e2e-*
+          path: results
+      - run: python3 lab/agent-e2e/compare.py report.md results/e2e-sill results/e2e-gitbash results/e2e-powershell
+      - run: cat report.md >> "$GITHUB_STEP_SUMMARY"
