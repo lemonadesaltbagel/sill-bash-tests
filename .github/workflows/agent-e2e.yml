@@ -36,6 +36,7 @@ jobs:
     timeout-minutes: 150
     env:
       SILL_DOWNLOAD_TOKEN: ${{ secrets.SILL_DOWNLOAD_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       PYTHONUTF8: "1"
     steps:

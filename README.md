@@ -1,6 +1,6 @@
 # sill-bash-tests
 
-The public test suite for **sill**, a native Windows Bash runtime for coding agents, shipped as a drop-in `bash.exe`. sill's source is private. This repository holds the tests and runs them on fresh `windows-2025` runners against sill's released build, side by side with Git Bash.
+The public test suite for **[sill](https://github.com/lemonadesaltbagel/sill)**, a native Windows Bash runtime for coding agents, shipped as a drop-in `bash.exe`. This repository holds the tests and runs them on fresh `windows-2025` runners against sill's released build, side by side with Git Bash.
 
 | | What | Where |
 |---|---|---|
@@ -16,7 +16,7 @@ The public test suite for **sill**, a native Windows Bash runtime for coding age
 - `conformance`: runs on every push and weekly against the latest release, and on demand with a tag. The tag `nightly` is a prerelease build of sill's current source, published with a run against it. Results are in the run summary and the `results` artifact.
 - `agent-e2e`: runs on demand. Choose `claude`, `opencode` or `codex`.
 
-Both download sill's release with the `SILL_DOWNLOAD_TOKEN` secret. Workflows triggered from forks don't receive it, so they can't run against sill.
+Both download sill's release from [lemonadesaltbagel/sill](https://github.com/lemonadesaltbagel/sill/releases) with the workflow's own token, so `conformance` also runs in forks. Only `nightly` needs the `SILL_DOWNLOAD_TOKEN` secret.
 
 ## Run locally (Windows)
 
