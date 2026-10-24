@@ -4,7 +4,7 @@ The public test suite for **[sill](https://github.com/lemonadesaltbagel/sill)**,
 
 | | What | Where |
 |---|---|---|
-| Conformance | What agents rely on from a Bash on Windows: arguments to native programs, paths, encoding, line endings, processes, size limits, `#!` scripts, tools, errors. Each case says why it matters | `conformance/` (cases, runner, README) |
+| Conformance | What agents rely on from a Bash on Windows, run through `bash.exe -c` and through sill's MCP server (`bash.exe --mcp`): arguments to native programs, paths, encoding, line endings, processes, size limits, `#!` scripts, tools, errors. Each case says why it matters | `conformance/` (cases, runner, README) |
 | Distribution checks | The packaged build on a machine with only Windows' own directories on PATH | `scripts/dist-check.sh` |
 | Smoke probes | Pipes, here-docs, quoting, native argv, identity | `lab/brush-smoke/smoke.py` |
 | Agent end-to-end | Real Claude Code, opencode or Codex (through a local LiteLLM proxy) with DeepSeek's cheap model on 18 tasks, per shell | `lab/agent-e2e/` (manual workflow) |

@@ -36,10 +36,11 @@ jobs:
       - name: Build echoargs (MSVC)
         shell: cmd
         run: call lab\argv-live\build-echoargs.cmd "%RUNNER_TEMP%\echoargs.exe"
-      - name: Conformance suite (sill vs Git Bash)
+      - name: Conformance suite (sill, sill through its MCP server, Git Bash)
         shell: pwsh
         run: |
           python conformance\run.py --shell "sill=${{ steps.sill.outputs.bash }}" `
+            --mcp "sill-mcp=${{ steps.sill.outputs.bash }}" `
             --shell "gitbash=C:\Program Files\Git\bin\bash.exe" `
             --echoargs "$env:RUNNER_TEMP\echoargs.exe" --out conformance.json --report conformance.md
           Get-Content conformance.md | Add-Content $env:GITHUB_STEP_SUMMARY

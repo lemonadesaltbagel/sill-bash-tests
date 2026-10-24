@@ -13,10 +13,14 @@ per-task record (pass/fail, every shell command with its error flag, turns, toke
 time) to OUT/results.json, and OUT/summary.md.
 
 Usage: python run.py --env sill --sill-bash dist/sill/bash.exe --out out/sill [--tasks a,b] [--reps 1]
-       [--harness claude|opencode]   (opencode: its shell via SHELL; DeepSeek via DEEPSEEK_API_KEY)
+       [--harness claude|opencode|codex|gemini]   (opencode: its shell via SHELL; DeepSeek via
+       DEEPSEEK_API_KEY; codex and gemini through the local LiteLLM proxy)
+  sill-mcp    (codex, gemini) the harness's own shell (PowerShell) plus sill's MCP server
+              (`bash.exe --mcp`), with no instructions beyond the server's own
 """
 import argparse
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -93,6 +97,14 @@ base_url = "{base_url}"
 env_key = "LITELLM_KEY"
 wire_api = "responses"
 """
+CODEX_MCP = """
+[mcp_servers.sill]
+command = "{exe}"
+args = ["--mcp"]
+startup_timeout_sec = 30
+tool_timeout_sec = 660
+default_tools_approval_mode = "approve"
+"""
 CODEX_BASH_AGENTS = ("# Shell\n\nThis machine's shell is bash. Run every shell command with bash: pass "
                      "`shell: \"bash\"` to the command tool. Write bash, not PowerShell.\n")
 
@@ -108,6 +120,11 @@ def codex_env(env_name, sill_bash, out_dir, model):
     (home / "config.toml").write_text(CODEX_CONFIG.format(
         model=OPENCODE_MODELS.get(model, model).split("/")[-1],
         base_url=os.environ.get("CODEX_PROXY_URL", "http://127.0.0.1:4000/v1")), encoding="utf-8")
+    if env_name == "sill-mcp":
+        # Codex as it comes (PowerShell), plus sill's MCP server: no AGENTS.md, so whether
+        # the model reaches for sill's bash tool is up to the server's own instructions.
+        with open(home / "config.toml", "a", encoding="utf-8") as f:
+            f.write(CODEX_MCP.format(exe=str(Path(sill_bash).resolve()).replace("\\", "\\\\")))
     agents = home / "AGENTS.md"
     if env_name in ("sill", "gitbash"):
         agents.write_text(CODEX_BASH_AGENTS, encoding="utf-8")
@@ -161,6 +178,17 @@ def parse_codex(path):
                 shell.append({"tool": "shell", "command": item.get("command", ""),
                               "is_error": item.get("exit_code") not in (0, None),
                               "output": str(item.get("aggregated_output", ""))[:2000]})
+            elif kind == "mcp_tool_call":
+                # sill's MCP tools: `bash` results end with "--- exit N ..." or "--- stopped".
+                result = json.dumps(item.get("result") or "", ensure_ascii=False)
+                exit_code = re.search(r"--- exit (-?\d+)", result)
+                args = item.get("arguments") or {}
+                failed = (item.get("status") == "failed" or item.get("error") is not None
+                          or (exit_code is not None and exit_code.group(1) != "0")
+                          or "--- stopped after" in result)
+                shell.append({"tool": f"mcp:{item.get('tool', '?')}",
+                              "command": args.get("command", json.dumps(args)) if isinstance(args, dict) else str(args),
+                              "is_error": failed, "output": result[:2000]})
             elif kind == "agent_message":
                 final_text = item.get("text", "")
         elif ev.get("type") == "turn.completed":
@@ -168,6 +196,99 @@ def parse_codex(path):
             tin += u.get("input_tokens", 0)
             tout += u.get("output_tokens", 0)
     return {"tools_used": tools_used, "shell_calls": shell, "num_turns": items, "result_subtype": None,
+            "result_is_error": None, "result_text": final_text[:1500], "input_tokens": tin,
+            "output_tokens": tout, "cost_usd_reported": None}
+
+
+def gemini_env(env_name, sill_bash, out_dir):
+    """Gemini CLI against the local LiteLLM proxy (GOOGLE_GEMINI_BASE_URL), which routes its
+    Gemini model names to DeepSeek. Its settings come from a profile of its own (USERPROFILE
+    and HOME point there, for every environment alike: Gemini CLI ignores a system settings
+    file in a user-writable folder), with folder trust off and sill's MCP server added for
+    sill-mcp. Its shell tool on Windows is PowerShell."""
+    env = dict(os.environ)
+    home = Path(out_dir).resolve() / "gemini-home"
+    (home / ".gemini").mkdir(parents=True, exist_ok=True)
+    settings = {
+        "security": {"auth": {"selectedType": "gemini-api-key"}, "folderTrust": {"enabled": False}},
+        "general": {"disableAutoUpdate": True, "disableUpdateNag": True},
+        "privacy": {"usageStatisticsEnabled": False},
+    }
+    if env_name == "sill-mcp":
+        settings["mcpServers"] = {"sill": {"command": str(Path(sill_bash).resolve()), "args": ["--mcp"],
+                                           "timeout": 660000, "trust": True}}
+    (home / ".gemini" / "settings.json").write_text(json.dumps(settings, indent=1), encoding="utf-8")
+    env.update({
+        "USERPROFILE": str(home), "HOME": str(home),
+        "GOOGLE_GEMINI_BASE_URL": os.environ.get("GEMINI_PROXY_URL", "http://127.0.0.1:4000"),
+        "GEMINI_API_KEY": os.environ.get("LITELLM_KEY", "sk-local-sill-proxy"),
+        "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
+        "GIT_AUTHOR_NAME": "sill e2e", "GIT_AUTHOR_EMAIL": "e2e@sill.invalid",
+        "GIT_COMMITTER_NAME": "sill e2e", "GIT_COMMITTER_EMAIL": "e2e@sill.invalid",
+    })
+    return env
+
+
+def find_gemini():
+    shim = shutil.which("gemini")
+    if not shim:
+        return None
+    # Node with the bundle, not the npm .cmd shim (cmd.exe would mangle arguments).
+    js = Path(shim).parent / "node_modules" / "@google" / "gemini-cli" / "bundle" / "gemini.js"
+    return [shutil.which("node") or "node", str(js)] if js.is_file() else [shim]
+
+
+def run_gemini(argv0, prompt, cwd, env, timeout, transcript, stderr_path):
+    # The prompt over stdin; -p (empty) makes it headless and is appended to it. A model name
+    # Gemini CLI sends no thinking settings for: LiteLLM would turn them into DeepSeek's
+    # thinking mode, whose reasoning the Gemini format can't carry back (400 on turn two).
+    argv = [*argv0, "-p", "", "--yolo", "-o", "stream-json", "-m", "gemini-2.0-flash"]
+    t0 = time.monotonic()
+    with open(transcript, "wb") as out, open(stderr_path, "wb") as err:
+        proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=out, stderr=err)
+        proc.stdin.write(prompt.encode("utf-8"))
+        proc.stdin.close()
+        try:
+            proc.wait(timeout=timeout)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            proc.wait()
+            timed_out = True
+    return proc.returncode, timed_out, time.monotonic() - t0
+
+
+def parse_gemini(path):
+    """Gemini CLI's stream-json: tool_use and tool_result events, assistant messages, and a
+    final result with token stats."""
+    tools_used, shell, calls, turns, tin, tout, final_text = {}, [], {}, 0, 0, 0, ""
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        kind = ev.get("type")
+        if kind == "tool_use":
+            name = ev.get("tool_name", "?")
+            tools_used[name] = tools_used.get(name, 0) + 1
+            calls[ev.get("tool_id")] = (name, ev.get("parameters") or {})
+            turns += 1
+        elif kind == "tool_result":
+            name, params = calls.get(ev.get("tool_id"), ("?", {}))
+            if "shell" in name or "bash" in name:
+                out = json.dumps(ev.get("output") or ev.get("error") or "", ensure_ascii=False)
+                exit_code = re.search(r"--- exit (-?\d+)|Exit Code: (-?\d+)", out)
+                code = next((g for g in exit_code.groups() if g), "0") if exit_code else "0"
+                shell.append({"tool": name, "command": params.get("command", json.dumps(params)),
+                              "is_error": ev.get("status") != "success" or code != "0" or "--- stopped after" in out,
+                              "output": out[:2000]})
+        elif kind == "message" and ev.get("role") == "assistant":
+            final_text = (final_text + ev.get("content", "")) if ev.get("delta") else ev.get("content", "")
+        elif kind == "result":
+            stats = ev.get("stats") or {}
+            tin = stats.get("input_tokens", 0)
+            tout = stats.get("output_tokens", 0)
+    return {"tools_used": tools_used, "shell_calls": shell, "num_turns": turns, "result_subtype": None,
             "result_is_error": None, "result_text": final_text[:1500], "input_tokens": tin,
             "output_tokens": tout, "cost_usd_reported": None}
 
@@ -333,8 +454,8 @@ def parse_transcript(path):
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--env", required=True, choices=["sill", "gitbash", "powershell"])
-    ap.add_argument("--harness", default="claude", choices=["claude", "opencode", "codex"])
+    ap.add_argument("--env", required=True, choices=["sill", "gitbash", "powershell", "sill-mcp"])
+    ap.add_argument("--harness", default="claude", choices=["claude", "opencode", "codex", "gemini"])
     ap.add_argument("--sill-bash", default="")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--tasks", default="")
@@ -356,6 +477,12 @@ def main():
             sys.exit("opencode not found on PATH (npm install -g opencode-ai)")
         env = opencode_env(a.env, a.sill_bash)
         key = env["DEEPSEEK_API_KEY"]
+    elif a.harness == "gemini":
+        gemini = find_gemini()
+        if not gemini:
+            sys.exit("gemini not found on PATH (npm install -g @google/gemini-cli)")
+        env = gemini_env(a.env, a.sill_bash, a.out)
+        key = os.environ.get("DEEPSEEK_API_KEY", "")
     else:
         codex = shutil.which("codex")
         if not codex:
@@ -383,6 +510,9 @@ def main():
                 code, timed_out, secs = run_opencode(
                     opencode, task["prompt"], work, env, a.model, a.timeout,
                     transcript, a.out / f"{name}.stderr.txt")
+            elif a.harness == "gemini":
+                code, timed_out, secs = run_gemini(
+                    gemini, task["prompt"], work, env, a.timeout, transcript, a.out / f"{name}.stderr.txt")
             else:
                 code, timed_out, secs = run_codex(
                     codex, task["prompt"], work, env, a.timeout, transcript, a.out / f"{name}.stderr.txt")
@@ -393,7 +523,8 @@ def main():
                 passed, detail = False, f"check error: {e!r}"
             rec = {"env": a.env, "harness": a.harness, "task": task["id"], "rep": rep, "passed": passed, "detail": detail[:500],
                    "exit_code": code, "timed_out": timed_out, "seconds": round(secs, 1)}
-            rec.update({"claude": parse_transcript, "opencode": parse_opencode, "codex": parse_codex}[a.harness](transcript))
+            rec.update({"claude": parse_transcript, "opencode": parse_opencode, "codex": parse_codex,
+                        "gemini": parse_gemini}[a.harness](transcript))
             records.append(rec)
             failed = sum(c["is_error"] for c in rec["shell_calls"])
             print(f"[{a.env}] {name}: {'PASS' if passed else 'FAIL'} shell={len(rec['shell_calls'])} "

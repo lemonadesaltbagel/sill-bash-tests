@@ -15,7 +15,7 @@ def main():
         f = d / "results.json"
         if f.exists():
             records += json.loads(f.read_text(encoding="utf-8"))
-    envs = sorted({r["env"] for r in records}, key=["sill", "gitbash", "powershell"].index)
+    envs = sorted({r["env"] for r in records}, key=["sill", "sill-mcp", "gitbash", "powershell"].index)
     tasks = list(dict.fromkeys(r["task"] for r in records))
 
     by = defaultdict(list)

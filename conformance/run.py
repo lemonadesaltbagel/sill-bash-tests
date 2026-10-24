@@ -8,11 +8,18 @@ runner's own, minus Python's UTF-8 switches (they would hide what the shell itse
 Usage (on Windows):
   python run.py --shell sill=C:\\...\\bash.exe --shell gitbash=... --echoargs echoargs.exe
                 --out results.json --report report.md [--only ID ...]
+                [--mcp sill-mcp=C:\\...\\bash.exe]
+
+--mcp runs each case through that shell's MCP server (`bash.exe --mcp`, started detached
+in the case's directory, as an MCP client starts it): the script goes to its `bash` tool,
+and the result's text is split back into stdout, stderr and the exit code. Its output is
+text for a model, so CRLF arrives as LF there.
 """
 import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +37,10 @@ CATEGORY_TITLES = {
     "crlf": "Line endings and bytes", "process": "Processes", "limits": "Size limits",
     "scripts": "Running scripts", "tools": "Tools agents use", "errors": "Errors and identity",
 }
+
+
+class _Done(Exception):
+    """Ends the launch step of `run_case` early (the MCP path has its results)."""
 
 
 def shell_env():
@@ -53,7 +64,7 @@ def end(pids):
         subprocess.run(["taskkill", "/T", "/F", "/PID", pid], capture_output=True)
 
 
-def run_case(case, shell, echoargs, timeout):
+def run_case(case, shell, echoargs, timeout, mcp=False):
     work = Path(tempfile.mkdtemp(prefix="conf-"))
     try:
         for rel, data in (case.get("files") or {}).items():
@@ -63,6 +74,9 @@ def run_case(case, shell, echoargs, timeout):
         script = case["script"].replace("{echoargs}", echoargs.replace("\\", "/"))
         t0 = time.monotonic()
         try:
+            if mcp:
+                out, err, code = run_via_mcp(shell, script, work, timeout)
+                raise _Done
             # Past Windows' 32,767-character command line, a harness passes a file.
             if len(script) > 30000:
                 (work / "_case.sh").write_bytes(script.encode("utf-8"))
@@ -72,11 +86,14 @@ def run_case(case, shell, echoargs, timeout):
             p = subprocess.run(argv, cwd=work, env=shell_env(), stdin=subprocess.DEVNULL,
                                capture_output=True, creationflags=DETACHED_PROCESS, timeout=timeout)
             out, err, code = p.stdout, p.stderr, p.returncode
+        except _Done:
+            pass
         except subprocess.TimeoutExpired as e:
             out, err, code = e.stdout or b"", (e.stderr or b"") + b"\n[timed out]", -1
         secs = time.monotonic() - t0
         if "expect" in case:
-            ok = text(out) == case["expect"]
+            # Through MCP the tool ends output with a newline either way.
+            ok = (text(out).rstrip("\n") == case["expect"].rstrip("\n")) if mcp else text(out) == case["expect"]
         else:
             try:
                 ok = bool(case["check"](out, err, code, secs))
@@ -92,6 +109,67 @@ def run_case(case, shell, echoargs, timeout):
                 "stdout": text(out)[:600], "stderr": text(err)[:600]}
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+class McpClient:
+    """Just enough of an MCP client (stdio, JSON-RPC lines) to call one server's tools."""
+
+    def __init__(self, argv, cwd, env):
+        self.p = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, creationflags=DETACHED_PROCESS)
+        self.n = 0
+        self.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                                    "clientInfo": {"name": "conformance", "version": "1"}})
+        self.send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+
+    def send(self, msg):
+        self.p.stdin.write((json.dumps(msg) + "\n").encode())
+        self.p.stdin.flush()
+
+    def request(self, method, params):
+        self.n += 1
+        self.send({"jsonrpc": "2.0", "id": self.n, "method": method, "params": params})
+        while True:
+            line = self.p.stdout.readline()
+            if not line:
+                raise RuntimeError("MCP server closed")
+            msg = json.loads(line)
+            if msg.get("id") == self.n:
+                if "error" in msg:
+                    raise RuntimeError(msg["error"])
+                return msg["result"]
+
+    def close(self):
+        try:
+            self.p.stdin.close()
+            self.p.wait(timeout=10)
+        except Exception:  # noqa: BLE001
+            self.p.kill()
+
+
+def run_via_mcp(shell, script, work, timeout):
+    """Runs `script` with the shell's MCP `bash` tool; returns (stdout, stderr, code)."""
+    client = McpClient([shell, "--mcp"], work, shell_env())
+    try:
+        result = client.request("tools/call", {"name": "bash", "arguments": {
+            "command": script, "timeout_ms": min(timeout * 1000, 600000)}})
+    finally:
+        client.close()
+    text = "".join(c.get("text", "") for c in result.get("content", []))
+    # The text ends with a footer line: `--- exit N · cwd ... ---` (or `--- stopped after`).
+    m = re.search(r"(?:\A|\n)--- (?:exit (-?\d+)|.*?)[^\n]*---\Z", text)
+    body = text[:m.start()] if m else text
+    code = int(m.group(1)) if m and m.group(1) else -1
+    if body.startswith("--- stderr ---\n"):
+        out_part, err_part = "", body[len("--- stderr ---\n"):]
+    elif "\n--- stderr ---\n" in body:
+        out_part, err_part = body.split("\n--- stderr ---\n", 1)
+    else:
+        out_part, err_part = body, ""
+    # The tool ends each stream with a newline; output without one can't be told apart.
+    out = out_part + "\n" if out_part else ""
+    err = err_part + "\n" if err_part else ""
+    return out.encode("utf-8"), err.encode("utf-8"), code
 
 
 def version(shell):
@@ -143,14 +221,16 @@ def report(results, shells, meta):
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shell", action="append", required=True, help="NAME=PATH")
+    ap.add_argument("--shell", action="append", default=[], help="NAME=PATH")
+    ap.add_argument("--mcp", action="append", default=[], help="NAME=PATH of a bash.exe run as its MCP server")
     ap.add_argument("--echoargs", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--report", required=True)
     ap.add_argument("--only", action="append")
     ap.add_argument("--timeout", type=int, default=60)
     a = ap.parse_args()
-    shells = [s.split("=", 1) for s in a.shell]
+    shells = [s.split("=", 1) for s in a.shell] + [s.split("=", 1) for s in a.mcp]
+    mcp_names = {s.split("=", 1)[0] for s in a.mcp}
     import ctypes
     meta = {"os": f"Windows {platform.version()}", "acp": ctypes.windll.kernel32.GetACP(),
             "date": time.strftime("%Y-%m-%d %H:%M"), "versions": {n: version(p) for n, p in shells}}
@@ -163,7 +243,7 @@ def main():
             continue
         results[case["id"]] = {}
         for name, path in shells:
-            r = run_case(case, path, os.path.abspath(a.echoargs), a.timeout)
+            r = run_case(case, path, os.path.abspath(a.echoargs), a.timeout, mcp=name in mcp_names)
             results[case["id"]][name] = r
         print(f"{case['id']:28} " + " ".join(f"{n}={'pass' if results[case['id']][n]['pass'] else 'FAIL'}"
                                               for n, _ in shells), flush=True)

@@ -3,6 +3,15 @@ model_list:
     litellm_params:
       model: deepseek/deepseek-flash
       api_key: os.environ/DEEPSEEK_API_KEY
+  # Gemini CLI asks for Gemini model names (its main model and helpers); all go to DeepSeek,
+  # without thinking: DeepSeek wants its reasoning sent back on the next turn, and the
+  # Gemini API format has no place for it (400 "reasoning_content ... must be passed back").
+  - model_name: "gemini-*"
+    litellm_params:
+      model: deepseek/deepseek-flash
+      api_key: os.environ/DEEPSEEK_API_KEY
+      thinking:
+        type: disabled
 litellm_settings:
   drop_params: true
 general_settings:
