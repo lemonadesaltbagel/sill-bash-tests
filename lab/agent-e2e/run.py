@@ -97,6 +97,8 @@ base_url = "{base_url}"
 env_key = "LITELLM_KEY"
 wire_api = "responses"
 """
+GIT_IDENTITY = {"GIT_AUTHOR_NAME": "sill e2e", "GIT_AUTHOR_EMAIL": "e2e@sill.invalid",
+                "GIT_COMMITTER_NAME": "sill e2e", "GIT_COMMITTER_EMAIL": "e2e@sill.invalid"}
 CODEX_MCP = """
 [mcp_servers.sill]
 command = "{exe}"
@@ -104,6 +106,8 @@ args = ["--mcp"]
 startup_timeout_sec = 30
 tool_timeout_sec = 660
 default_tools_approval_mode = "approve"
+# Codex starts MCP servers with a few variables only; the tasks' git identity is passed on.
+env = { GIT_AUTHOR_NAME = "sill e2e", GIT_AUTHOR_EMAIL = "e2e@sill.invalid", GIT_COMMITTER_NAME = "sill e2e", GIT_COMMITTER_EMAIL = "e2e@sill.invalid" }
 """
 CODEX_BASH_AGENTS = ("# Shell\n\nThis machine's shell is bash. Run every shell command with bash: pass "
                      "`shell: \"bash\"` to the command tool. Write bash, not PowerShell.\n")
@@ -216,7 +220,8 @@ def gemini_env(env_name, sill_bash, out_dir):
     }
     if env_name == "sill-mcp":
         settings["mcpServers"] = {"sill": {"command": str(Path(sill_bash).resolve()), "args": ["--mcp"],
-                                           "timeout": 660000, "trust": True}}
+                                           "timeout": 660000, "trust": True,
+                                           "env": dict(GIT_IDENTITY)}}
     (home / ".gemini" / "settings.json").write_text(json.dumps(settings, indent=1), encoding="utf-8")
     env.update({
         "USERPROFILE": str(home), "HOME": str(home),
