@@ -1,0 +1,82 @@
+name: swebench-windows
+
+# Which SWE-bench tasks work on native Windows, with no model involved: each task's tests
+# fail without its reference fix and pass with it (lab/bench/swebench_windows.py). Those are
+# the real-project tasks the shells are then compared on.
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "Tasks to try per repository (spread over its tasks; 0 = all)"
+        default: "8"
+      dataset:
+        description: "Hugging Face dataset"
+        default: "princeton-nlp/SWE-bench_Verified"
+
+permissions:
+  contents: read
+
+jobs:
+  filter:
+    strategy:
+      fail-fast: false
+      matrix:
+        repo:
+          - django/django
+          - sympy/sympy
+          - sphinx-doc/sphinx
+          - matplotlib/matplotlib
+          - scikit-learn/scikit-learn
+          - astropy/astropy
+          - pydata/xarray
+          - pytest-dev/pytest
+          - pylint-dev/pylint
+          - psf/requests
+          - mwaskom/seaborn
+          - pallets/flask
+    runs-on: windows-2025
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tools
+        shell: pwsh
+        run: python -m pip install -q "swebench<5" datasets uv
+      - name: Filter
+        shell: pwsh
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          $name = "${{ matrix.repo }}".Replace('/', '__')
+          New-Item -ItemType Directory -Force out | Out-Null
+          python lab\bench\swebench_windows.py --dataset "${{ inputs.dataset }}" --repo "${{ matrix.repo }}" `
+            --count ${{ inputs.count }} --work "$env:RUNNER_TEMP\swe" --out "out\$name.jsonl"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: swe-${{ strategy.job-index }}
+          path: out/
+          if-no-files-found: warn
+
+  report:
+    needs: filter
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: swe-*
+          path: results
+          merge-multiple: true
+      - run: python3 lab/bench/summarize.py swebench-windows.md results/*.jsonl
+      - run: cat swebench-windows.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: swebench-windows
+          path: |
+            swebench-windows.md
+            works.jsonl
