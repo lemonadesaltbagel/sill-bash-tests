@@ -136,25 +136,30 @@ def passed(status):
     return status in ("PASSED", "XFAIL")
 
 
-def one(inst, work, log):
+def clone(repo, dest, log):
+    """Clones `repo` from GitHub into `dest` (line endings as committed); True on success."""
+    if dest.exists():
+        return True
+    code, _ = run(["git", "clone", "-q", "-c", "core.autocrlf=false", f"https://github.com/{repo}", str(dest)],
+                  timeout=1800, log=log)
+    return not code
+
+
+def prepare(inst, src, venv, work, log):
+    """Sets up the task in the clone `src`: its base commit, a virtual environment `venv`
+    with its dependencies, and the package installed. Returns (record, env): the record has
+    an `outcome` when setup failed; env runs things in the environment."""
     repo, version = inst["repo"], inst["version"]
     specs = MAP_REPO_VERSION_TO_SPECS[repo][version]
     rec = {"instance_id": inst["instance_id"], "repo": repo, "version": version,
            "python": specs.get("python"), "skipped_steps": []}
     t0 = time.monotonic()
-    src = work / "repos" / repo.replace("/", "__")
-    if not src.exists():
-        code, _ = run(["git", "clone", "-q", "-c", "core.autocrlf=false", f"https://github.com/{repo}", str(src)],
-                      timeout=1800, log=log)
-        if code:
-            return {**rec, "outcome": "clone_failed"}
     run(["git", "-C", str(src), "reset", "-q", "--hard"], log=log)
-    run(["git", "-C", str(src), "clean", "-qfdx"], log=log)
+    run(["git", "-C", str(src), "clean", "-qfdx", "-e", venv.name], log=log)
     code, _ = run(["git", "-C", str(src), "checkout", "-q", "-f", inst["base_commit"]], log=log)
     if code:
-        return {**rec, "outcome": "checkout_failed"}
+        return {**rec, "outcome": "checkout_failed"}, None
 
-    venv = work / "venvs" / inst["instance_id"]
     shutil.rmtree(venv, ignore_errors=True)
     python = specs["python"]
     code, text = run(["uv", "venv", "--seed", "--python", python, str(venv)], log=log)
@@ -163,7 +168,7 @@ def one(inst, work, log):
         python = rec["python_substituted"] = "3.8"
         code, text = run(["uv", "venv", "--seed", "--python", python, str(venv)], log=log)
     if code:
-        return {**rec, "outcome": "python_unavailable", "detail": text[-300:]}
+        return {**rec, "outcome": "python_unavailable", "detail": text[-300:]}, None
     env = dict(os.environ, VIRTUAL_ENV=str(venv),
                PATH=str(venv / BIN) + os.pathsep + os.environ["PATH"],
                PYTHONUTF8="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
@@ -182,12 +187,12 @@ def one(inst, work, log):
         elif pkgs:
             reqs = conda_to_pip(pkgs)
     except Exception as e:  # noqa: BLE001
-        return {**rec, "outcome": "requirements_unavailable", "detail": str(e)[:300]}
+        return {**rec, "outcome": "requirements_unavailable", "detail": str(e)[:300]}, None
     for group in (reqs, specs.get("pip_packages", [])):
         if group:
             code, text = run(uv_pip + list(group), env=env, log=log)
             if code:
-                return {**rec, "outcome": "deps_failed", "detail": text[-600:]}
+                return {**rec, "outcome": "deps_failed", "detail": text[-600:]}, None
     for step in specs.get("pre_install", []):
         if re.match(r"\s*(apt-get|apt|wget|QHULL|mkdir -p /|tar )", step):
             rec["skipped_steps"].append(step[:120])
@@ -196,18 +201,15 @@ def one(inst, work, log):
     if "install" in specs:
         code, text = sh(specs["install"] + "\n", src, env, 1800, log)
         if code:
-            return {**rec, "outcome": "install_failed", "detail": text[-600:]}
+            return {**rec, "outcome": "install_failed", "detail": text[-600:]}, None
     rec["setup_seconds"] = round(time.monotonic() - t0)
+    return rec, env
 
-    # The tests, without and with the reference fix.
-    test_files = re.findall(r"diff --git a/.* b/(.*)", inst["test_patch"])
-    patch_file = work / "test.patch"
-    patch_file.write_text(inst["test_patch"], encoding="utf-8", newline="\n")
-    fix_file = work / "fix.patch"
-    fix_file.write_text(inst["patch"], encoding="utf-8", newline="\n")
-    code, text = run(["git", "-C", str(src), "apply", "-v", str(patch_file)], log=log)
-    if code:
-        return {**rec, "outcome": "test_patch_failed", "detail": text[-300:]}
+
+def test_script(inst, venv, env, log):
+    """The bash script that runs the task's tests (output between START and END)."""
+    specs = MAP_REPO_VERSION_TO_SPECS[inst["repo"]][inst["version"]]
+    uv_pip = ["uv", "pip", "install", "--python", str(venv / BIN / PY)]
     base_cmd = specs["test_cmd"]
     if base_cmd.startswith("tox --current-env"):
         # tox only wraps pytest here (sphinx), and picks its own Python on Windows.
@@ -215,20 +217,47 @@ def one(inst, work, log):
     if "pytest" in base_cmd and not has_module(venv, "pytest"):
         run(uv_pip + ["pytest"], env=env, log=log)
     test_cmd = " ".join([base_cmd, *get_test_directives(inst)])
-    script = "\n".join([*specs.get("eval_commands", []), f"echo '{START}'", test_cmd, f"echo '{END}'", ""])
-    parser = MAP_REPO_TO_PARSER[repo]
+    return "\n".join([*specs.get("eval_commands", []), f"echo '{START}'", test_cmd, f"echo '{END}'", ""])
+
+
+def run_tests(inst, src, env, script, log):
+    """Runs the task's tests in `src` with its test patch applied (and the test files put
+    back after); returns ({test: status}, timed out, output)."""
+    test_files = re.findall(r"diff --git a/.* b/(.*)", inst["test_patch"])
+    patch_file = src.parent / f"{inst['instance_id']}-test.patch"
+    patch_file.write_text(inst["test_patch"], encoding="utf-8", newline="\n")
+    run(["git", "-C", str(src), "checkout", "-q", inst["base_commit"], "--", *test_files], log=log)
+    code, text = run(["git", "-C", str(src), "apply", "-v", str(patch_file)], log=log)
+    if code:
+        return None, False, text
+    code, out = sh(script, src, env, 1800, log)
+    run(["git", "-C", str(src), "checkout", "-q", inst["base_commit"], "--", *test_files], log=log)
+    return evaluate(out, MAP_REPO_TO_PARSER[inst["repo"]]), code is None, out
+
+
+def one(inst, work, log):
+    src = work / "repos" / inst["repo"].replace("/", "__")
+    if not clone(inst["repo"], src, log):
+        return {"instance_id": inst["instance_id"], "repo": inst["repo"], "outcome": "clone_failed"}
+    venv = work / "venvs" / inst["instance_id"]
+    rec, env = prepare(inst, src, venv, work, log)
+    if env is None:
+        return rec
+    script = test_script(inst, venv, env, log)
     f2p, p2p = json.loads(inst["FAIL_TO_PASS"]), json.loads(inst["PASS_TO_PASS"])
+    fix_file = work / "fix.patch"
+    fix_file.write_text(inst["patch"], encoding="utf-8", newline="\n")
 
     t1 = time.monotonic()
-    code_before, before_text = sh(script, src, env, 1800, log)
-    before = evaluate(before_text, parser)
+    before, before_timeout, before_text = run_tests(inst, src, env, script, log)
+    if before is None:
+        return {**rec, "outcome": "test_patch_failed", "detail": before_text[-300:]}
     code, text = run(["git", "-C", str(src), "apply", "-v", str(fix_file)], log=log)
     if code:
         return {**rec, "outcome": "fix_failed", "detail": text[-300:]}
-    code_after, after_text = sh(script, src, env, 1800, log)
-    after = evaluate(after_text, parser)
+    after, after_timeout, after_text = run_tests(inst, src, env, script, log)
+    after = after or {}
     rec["test_seconds"] = round(time.monotonic() - t1)
-    run(["git", "-C", str(src), "checkout", "-q", inst["base_commit"], "--", *test_files], log=log)
 
     rec["f2p_passing_after"] = [t for t in f2p if passed(after.get(t, ""))]
     # The check for a fix on Windows: the FAIL_TO_PASS tests that fail without it here (some
@@ -237,7 +266,7 @@ def one(inst, work, log):
     rec["f2p_windows"] = [t for t in rec["f2p_passing_after"] if not passed(before.get(t, ""))]
     rec["p2p_windows"] = [t for t in p2p if passed(after.get(t, ""))]
     rec["f2p"], rec["p2p_total"] = f2p, len(p2p)
-    rec["timed_out"] = code_before is None or code_after is None
+    rec["timed_out"] = before_timeout or after_timeout
     if rec["timed_out"]:
         rec["outcome"] = "tests_timed_out"
     elif not after:

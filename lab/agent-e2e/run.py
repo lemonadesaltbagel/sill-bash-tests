@@ -464,6 +464,12 @@ def main():
     ap.add_argument("--sill-bash", default="")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--tasks", default="")
+    ap.add_argument("--task-source", default="builtin", choices=["builtin", "swebench"],
+                    help="swebench: the SWE-bench tasks that work on Windows (lab/bench)")
+    ap.add_argument("--swebench-works", default="lab/bench/works-verified.jsonl")
+    ap.add_argument("--swebench-dataset", default="princeton-nlp/SWE-bench_Verified")
+    ap.add_argument("--swebench-cache", default="", help="where repositories are cloned once")
+    ap.add_argument("--shard", default="", help="I/N: run every N-th task, starting with the I-th (1-based)")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--max-turns", type=int, default=30)
@@ -495,7 +501,17 @@ def main():
         env = codex_env(a.env, a.sill_bash, a.out, a.model)
         key = os.environ.get("DEEPSEEK_API_KEY", "")
     wanted = set(filter(None, a.tasks.split(",")))
-    tasks = [t for t in TASKS if not wanted or t["id"] in wanted]
+    if a.task_source == "swebench":
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+        import swebench_tasks
+        cache = a.swebench_cache or str(a.out.resolve().parent / "swebench-cache")
+        source = swebench_tasks.tasks(a.swebench_works, a.swebench_dataset, cache)
+    else:
+        source = TASKS
+    tasks = [t for t in source if not wanted or t["id"] in wanted]
+    if a.shard:
+        i, n = (int(x) for x in a.shard.split("/"))
+        tasks = tasks[i - 1::n]
 
     a.out.mkdir(parents=True, exist_ok=True)
     records = []
@@ -505,22 +521,27 @@ def main():
             work = (a.out / "work" / name).resolve()
             shutil.rmtree(work, ignore_errors=True)
             work.mkdir(parents=True)
-            task["setup"](str(work))
+            try:
+                task["setup"](str(work))
+            except Exception as e:  # a task that can't be set up isn't the agent's failure
+                print(f"[{a.env}] {name}: SETUP FAILED {e!r}"[:300], flush=True)
+                continue
+            task_env = {**env, **task["env"](str(work), env)} if task.get("env") else env
             transcript = a.out / f"{name}.jsonl"
             if a.harness == "claude":
                 code, timed_out, secs = run_claude(
-                    claude, task["prompt"], work, env, a.env, a.model, a.max_turns, a.timeout,
+                    claude, task["prompt"], work, task_env, a.env, a.model, a.max_turns, a.timeout,
                     transcript, a.out / f"{name}.stderr.txt")
             elif a.harness == "opencode":
                 code, timed_out, secs = run_opencode(
-                    opencode, task["prompt"], work, env, a.model, a.timeout,
+                    opencode, task["prompt"], work, task_env, a.model, a.timeout,
                     transcript, a.out / f"{name}.stderr.txt")
             elif a.harness == "gemini":
                 code, timed_out, secs = run_gemini(
-                    gemini, task["prompt"], work, env, a.timeout, transcript, a.out / f"{name}.stderr.txt")
+                    gemini, task["prompt"], work, task_env, a.timeout, transcript, a.out / f"{name}.stderr.txt")
             else:
                 code, timed_out, secs = run_codex(
-                    codex, task["prompt"], work, env, a.timeout, transcript, a.out / f"{name}.stderr.txt")
+                    codex, task["prompt"], work, task_env, a.timeout, transcript, a.out / f"{name}.stderr.txt")
             redact_key([transcript, a.out / f"{name}.stderr.txt"], key)
             try:
                 passed, detail = task["check"](str(work))
