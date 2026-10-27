@@ -209,7 +209,10 @@ def environment(task, root, log):
     if Path(r"C:\mingw64\bin").is_dir():
         path.append(r"C:\mingw64\bin")
     env = dict(os.environ, VIRTUAL_ENV=str(venv), PATH=os.pathsep.join(path + [os.environ["PATH"]]),
-               PYTHONUTF8="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
+               PYTHONUTF8="1", PIP_DISABLE_PIP_VERSION_CHECK="1",
+               # git as in the task's Linux container: files checked out as committed (Git for
+               # Windows converts to CRLF by default, which changes checksums and diffs).
+               GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.autocrlf", GIT_CONFIG_VALUE_0="false")
 
     workdir = root / "app"
     lines = task.dockerfile.replace("\\\r\n", " ").replace("\\\n", " ").splitlines()
