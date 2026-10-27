@@ -27,6 +27,17 @@ import time
 from pathlib import Path
 
 from datasets import load_dataset
+
+if os.name == "nt":
+    # swebench's package imports `resource` (Unix only) for its Docker image builder, which
+    # isn't used here; its specs, test directives and log parsers are.
+    import types
+    _resource = types.ModuleType("resource")
+    _resource.RLIMIT_NOFILE = 7
+    _resource.getrlimit = lambda _kind: (8192, 8192)
+    _resource.setrlimit = lambda _kind, _limits: None
+    sys.modules["resource"] = _resource
+
 from swebench.harness.constants import MAP_REPO_VERSION_TO_SPECS
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 from swebench.harness.test_spec.python import get_environment_yml, get_requirements, get_test_directives
