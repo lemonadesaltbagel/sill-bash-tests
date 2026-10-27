@@ -83,9 +83,20 @@ def run_case(case, shell, echoargs, timeout, mcp=False):
                 argv = [shell, "_case.sh"]
             else:
                 argv = [shell, "-c", script]
-            p = subprocess.run(argv, cwd=work, env=shell_env(), stdin=subprocess.DEVNULL,
-                               capture_output=True, creationflags=DETACHED_PROCESS, timeout=timeout)
-            out, err, code = p.stdout, p.stderr, p.returncode
+            if case.get("after_running"):
+                # A program `start` leaves running inherits every inheritable handle cmd.exe
+                # has, a pipe's included (as under Git Bash), and a pipe would wait for it.
+                with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
+                    p = subprocess.run(argv, cwd=work, env=shell_env(), stdin=subprocess.DEVNULL,
+                                       stdout=fo, stderr=fe, creationflags=DETACHED_PROCESS,
+                                       timeout=timeout)
+                    fo.seek(0)
+                    fe.seek(0)
+                    out, err, code = fo.read(), fe.read(), p.returncode
+            else:
+                p = subprocess.run(argv, cwd=work, env=shell_env(), stdin=subprocess.DEVNULL,
+                                   capture_output=True, creationflags=DETACHED_PROCESS, timeout=timeout)
+                out, err, code = p.stdout, p.stderr, p.returncode
         except _Done:
             pass
         except subprocess.TimeoutExpired as e:
@@ -99,6 +110,16 @@ def run_case(case, shell, echoargs, timeout, mcp=False):
                 ok = bool(case["check"](out, err, code, secs))
             except Exception:  # noqa: BLE001
                 ok = False
+        if case.get("after_running"):
+            if secs > 10:
+                ok = False
+                err += b"\n[the shell waited for what the command left running]"
+            time.sleep(1)
+            alive = processes_with(case["after_running"])
+            if not alive:
+                ok = False
+                err += f"\n[not running any more: {case['after_running']}]".encode()
+            end([l.split()[0] for l in alive])
         if case.get("after_no_process"):
             left = processes_with(case["after_no_process"])
             if left:
@@ -156,9 +177,11 @@ def run_via_mcp(shell, script, work, timeout):
     finally:
         client.close()
     text = "".join(c.get("text", "") for c in result.get("content", []))
-    # The text ends with a footer line: `--- exit N · cwd ... ---` (or `--- stopped after`).
-    m = re.search(r"(?:\A|\n)--- (?:exit (-?\d+)|.*?)[^\n]*---\Z", text)
-    body = text[:m.start()] if m else text
+    # The output ends with a footer line, `--- exit N · cwd ... ---` (or `--- stopped after
+    # ...`), and maybe a note after it (programs the command left running).
+    footers = list(re.finditer(r"^--- (?:exit (-?\d+)\b|stopped )[^\n]*---$", text, re.M))
+    m = footers[-1] if footers else None
+    body = text[:m.start()].removesuffix("\n") if m else text
     code = int(m.group(1)) if m and m.group(1) else -1
     if body.startswith("--- stderr ---\n"):
         out_part, err_part = "", body[len("--- stderr ---\n"):]
@@ -243,7 +266,11 @@ def main():
             continue
         results[case["id"]] = {}
         for name, path in shells:
-            r = run_case(case, path, os.path.abspath(a.echoargs), a.timeout, mcp=name in mcp_names)
+            if name in mcp_names and case.get("direct_only"):
+                results[case["id"]][name] = {"pass": True, "code": 0, "secs": 0, "stdout": "(direct only)", "stderr": ""}
+                continue
+            r = run_case(case, path, os.path.abspath(a.echoargs), case.get("timeout", a.timeout),
+                         mcp=name in mcp_names)
             results[case["id"]][name] = r
         print(f"{case['id']:28} " + " ".join(f"{n}={'pass' if results[case['id']][n]['pass'] else 'FAIL'}"
                                               for n, _ in shells), flush=True)

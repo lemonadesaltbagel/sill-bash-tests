@@ -1,13 +1,14 @@
 name: agent-e2e
 
-# Real coding agents (Claude Code, opencode, or Codex via a local LiteLLM proxy) through
-# DeepSeek's cheap model, on the same tasks, with sill, Git Bash or PowerShell as the shell.
+# Real coding agents (Claude Code, opencode, or Codex and Gemini CLI via a local LiteLLM
+# proxy) through DeepSeek's cheap model, on the same tasks, with sill, Git Bash or PowerShell
+# as the shell, or (Codex, Gemini) PowerShell plus sill's MCP server (sill-mcp).
 # Manual only. Transcripts are scrubbed of the key before upload.
 on:
   workflow_dispatch:
     inputs:
       harness:
-        description: "claude, opencode or codex"
+        description: "claude, opencode, codex or gemini"
         default: "claude"
       tasks:
         description: "Comma-separated task ids (empty = all)"
@@ -16,8 +17,11 @@ on:
         description: "Repetitions per task"
         default: "1"
       sill_tag:
-        description: "sill release tag (empty = latest release; nightly = current source)"
+        description: "sill release tag (empty = latest release; nightly = current source; run:ID = a build run's artifact)"
         default: ""
+      envs:
+        description: "JSON list of shells: sill, gitbash, powershell, sill-mcp (codex and gemini only)"
+        default: '["sill","gitbash","powershell"]'
 
 permissions:
   contents: read
@@ -31,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [sill, gitbash, powershell]
+        env: ${{ fromJSON(inputs.envs) }}
     runs-on: windows-2025
     timeout-minutes: 150
     env:
@@ -55,9 +59,11 @@ jobs:
           switch ("${{ inputs.harness }}") {
             'claude'   { npm install -g @anthropic-ai/claude-code@latest 2>&1 | Select-Object -Last 2; claude --version }
             'opencode' { npm install -g opencode-ai@latest 2>&1 | Select-Object -Last 2; opencode --version }
-            'codex'    {
-              npm install -g @openai/codex@latest 2>&1 | Select-Object -Last 2; codex --version
+            { $_ -in 'codex', 'gemini' } {
+              if ($_ -eq 'codex') { npm install -g @openai/codex@latest 2>&1 | Select-Object -Last 2; codex --version }
+              else { npm install -g @google/gemini-cli@latest 2>&1 | Select-Object -Last 2; gemini --version }
               python -m pip install -q "litellm[proxy]"
+              python scripts/lab-codex/patch-litellm.py
               $litellm = Join-Path (Split-Path (Get-Command python).Source) 'Scripts\litellm.exe'
               Start-Process -FilePath $litellm -ArgumentList '--config', "$PWD\scripts\lab-codex\litellm.yaml", '--port', '4000', '--host', '127.0.0.1' -WindowStyle Hidden
               foreach ($i in 1..60) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:4000/health/liveliness -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 2 } }
@@ -93,5 +99,5 @@ jobs:
         with:
           pattern: e2e-*
           path: results
-      - run: python3 lab/agent-e2e/compare.py report.md results/e2e-sill results/e2e-gitbash results/e2e-powershell
+      - run: python3 lab/agent-e2e/compare.py report.md results/e2e-*
       - run: cat report.md >> "$GITHUB_STEP_SUMMARY"

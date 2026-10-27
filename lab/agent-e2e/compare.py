@@ -30,7 +30,8 @@ def main():
         err = sum(c["is_error"] for r in rs for c in r["shell_calls"])
         return f"{'✅' if p == len(rs) else ('❌' if p == 0 else '◐')} {p}/{len(rs)} · {calls} calls, {err} err"
 
-    harness = {"claude": "Claude Code", "opencode": "opencode", "codex": "Codex CLI (via LiteLLM)"}.get(
+    harness = {"claude": "Claude Code", "opencode": "opencode", "codex": "Codex CLI (via LiteLLM)",
+               "gemini": "Gemini CLI (via LiteLLM)"}.get(
         next((r.get("harness") for r in records if r.get("harness")), "claude"), "?")
     md = [f"# Agent end-to-end: {harness} + DeepSeek (cheap model) on Windows", "",
           "Each cell is tasks passed/runs, then shell tool calls and how many errored.", "",
