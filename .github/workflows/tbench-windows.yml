@@ -16,6 +16,9 @@ on:
       sill_tag:
         description: "sill release tag (empty = latest release; nightly = current source; run:ID = a build run's artifact)"
         default: ""
+      extra:
+        description: "Extra arguments for tbench_windows.py (e.g. --trace --solve-timeout 300)"
+        default: ""
 
 permissions:
   contents: read
@@ -60,7 +63,7 @@ jobs:
           New-Item -ItemType Directory -Force out | Out-Null
           python lab\bench\tbench_windows.py --tasks-dir tb\tasks --root D:\tb `
             --shell "sill=${{ steps.sill.outputs.bash }}" --shell "gitbash=C:\Program Files\Git\bin\bash.exe" `
-            --only "${{ inputs.only }}" --shard "${{ matrix.shard }}" --out "out\tb-$name.jsonl"
+            --only "${{ inputs.only }}" --shard "${{ matrix.shard }}" --out "out\tb-$name.jsonl" ${{ inputs.extra }}
       - name: Name the results
         if: always()
         id: name

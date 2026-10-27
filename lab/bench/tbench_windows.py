@@ -285,8 +285,13 @@ def one(task, shells, root, log):
         except Exception as e:  # noqa: BLE001
             return {**rec, "outcome": "environment_failed", "detail": str(e)[:600]}
         solve = run_root / "solution" / "solve.sh"
-        solve.write_text(neutralize(solve.read_text(encoding="utf-8", errors="replace")), encoding="utf-8", newline="\n")
-        code, secs, tail = sh(shell, solve, workdir, env, task.timeout("agent", 900) * 2, log)
+        body = neutralize(solve.read_text(encoding="utf-8", errors="replace"))
+        if one.trace:
+            # Where a run stops: each command, as it runs (the last lines are in solve_tail).
+            body = "set -x\n" + body
+        solve.write_text(body, encoding="utf-8", newline="\n")
+        limit = one.solve_timeout or task.timeout("agent", 900) * 2
+        code, secs, tail = sh(shell, solve, workdir, env, limit, log)
         reward, vtail = verify(task, run_root, workdir, env, log)
         end_processes_under(run_root)
         rec["shells"][name] = {"reward": reward, "solve_exit": code, "solve_seconds": round(secs),
@@ -297,6 +302,10 @@ def one(task, shells, root, log):
     return rec
 
 
+one.trace = False
+one.solve_timeout = 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks-dir", required=True)
@@ -305,7 +314,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--only", default="")
     ap.add_argument("--shard", default="")
+    ap.add_argument("--trace", action="store_true", help="run reference solutions with set -x")
+    ap.add_argument("--solve-timeout", type=float, default=0, help="seconds (default: twice the task's)")
     a = ap.parse_args()
+    one.trace, one.solve_timeout = a.trace, a.solve_timeout
     shells = [tuple(s.split("=", 1)) for s in a.shell]
     names = sorted(p.name for p in Path(a.tasks_dir).iterdir() if (p / "task.toml").exists())
     if a.only:
