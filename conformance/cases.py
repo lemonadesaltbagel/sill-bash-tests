@@ -45,8 +45,8 @@ def utf8(b):
         return False
 
 
-def argv(id, words, want, why):
-    return {"id": id, "cat": "argv", "why": why, "script": '"{echoargs}" ' + words,
+def argv(id, words, want, why, cat="argv"):
+    return {"id": id, "cat": cat, "why": why, "script": '"{echoargs}" ' + words,
             "check": lambda o, e, c, s, want=want: _json(o) == want}
 
 
@@ -262,6 +262,33 @@ CASES = [
      "why": "A program that prompts (`npm init`) gets end of input and returns, rather than waiting for an answer.",
      "script": "npm init; echo \"rc=$?\"", "needs": ["npm"],
      "timeout": 30, "check": lambda o, e, c, s: s < 25 and "rc=" in text(o)},
+
+    # --- look-alikes: sill's rules don't fire on what only resembles their trigger ------------------
+    {"id": "alike-sed-c-script", "cat": "alike",
+     "why": "A sed script that starts like a drive path (`/c/d`) reaches sed as written, not as `C:/d`.",
+     "script": "printf 'abc\\nxyz\\n' | sed '/c/d'", "expect": "xyz\n"},
+    {"id": "alike-awk-c-pattern", "cat": "alike",
+     "why": "An awk pattern like `/c/` reaches awk as written.",
+     "script": "printf 'c1\\nd\\nc2\\n' | awk '/c/ {n++} END {print n}'", "expect": "2\n"},
+    {"id": "alike-grep-c-pattern", "cat": "alike",
+     "why": "A grep pattern like `/c/` reaches grep as written, not as `C:/`.",
+     "script": "printf 'x/c/y\\nabc\\n' | grep '/c/'", "expect": "x/c/y\n"},
+    {"id": "alike-find-path-pattern", "cat": "alike",
+     "why": "A `find -path` pattern stays a pattern.",
+     "files": {"c/d/f.txt": "x"}, "script": "find . -path '*/c/d/*' -name '*.txt'", "expect": "./c/d/f.txt\n"},
+    {"id": "alike-cmd-quoted-dev-null", "cat": "alike",
+     "why": "`/dev/null` inside quotes in text for cmd.exe is text, not a redirection.",
+     "script": "MSYS_NO_PATHCONV=1 cmd.exe /d /c 'echo \"a>/dev/null\"'", "expect": "\"a>/dev/null\"\n"},
+    {"id": "alike-cmd-dev-null-word", "cat": "alike",
+     "why": "`/dev/null` as a word (not after `>`) in text for cmd.exe stays as written.",
+     "script": "MSYS_NO_PATHCONV=1 cmd.exe /d /c 'echo /dev/null'", "expect": "/dev/null\n"},
+    argv("alike-unc-not-switch", "//server/share", ["//server/share"],
+         "A `//server/share` path isn't a `//c`-style switch.", cat="alike"),
+    {"id": "alike-npm-bash-script", "cat": "alike",
+     "why": "An npm script that is bash (`set -e && ...`) runs without a note that it looks written for cmd.exe.",
+     "files": {"package.json": '{"name": "a", "version": "1.0.0", "scripts": {"build": "set -e && echo ok"}}'},
+     "script": "npm run -s build", "needs": ["npm"],
+     "check": lambda o, e, c, s: text(o).strip() == "ok" and b"cmd.exe" not in e},
 
     # --- errors and identity -------------------------------------------------------------------------
     {"id": "err-not-found", "cat": "errors", "why": "A missing command: status 127 and bash's message shape.",

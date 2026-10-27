@@ -51,7 +51,10 @@ START, END = ">>>>> Start Test Output", ">>>>> End Test Output"
 def sh(script, cwd, env, timeout, log):
     """Runs a bash script with Git Bash; returns (exit code or None on timeout, output)."""
     path = Path(cwd) / "_swe_step.sh"
-    path.write_text(script, encoding="utf-8", newline="\n")
+    # The task's environment first on PATH, whatever bash's own start-up put there.
+    venv = env.get("VIRTUAL_ENV", "")
+    first = f'export PATH="$(cygpath -u \'{venv}\')/{BIN}:$PATH"\n' if os.name == "nt" and venv else ""
+    path.write_text(first + script, encoding="utf-8", newline="\n")
     p = subprocess.Popen([GIT_BASH, "--noprofile", "--norc", str(path)], cwd=cwd, env=env,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
     try:
@@ -91,22 +94,37 @@ def conda_to_pip(spec):
 
 
 def yml_deps(yml):
-    """The dependencies of an environment.yml, as pip requirements (best effort)."""
-    deps, in_pip = [], False
-    for line in yml.splitlines():
-        m = re.match(r"^(\s*)-\s+(.+?)\s*$", line)
+    """The dependencies of an environment.yml (its `dependencies:` section, conda's and
+    pip's), as pip requirements. Best effort: conda-only packages fail to install later."""
+    deps, section, pip_indent = [], None, None
+    for raw in yml.splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith((" ", "-")):
+            section = line.split(":", 1)[0].strip()
+            continue
+        if section != "dependencies":
+            continue
+        m = re.match(r"^(\s*)-\s+(.+)$", line)
         if not m:
-            in_pip = in_pip and line.startswith(" ")
             continue
-        item = m.group(2)
+        indent, item = len(m.group(1)), m.group(2).strip().strip("'\"")
         if item.rstrip(":") == "pip":
-            in_pip = True
+            pip_indent = indent
             continue
-        if len(m.group(1)) >= 4 and in_pip:
+        if pip_indent is not None and indent > pip_indent:
             deps.append(item)
-        elif not item.startswith(("python", "pip")):
+            continue
+        pip_indent = None
+        if not item.startswith(("python", "pip")):
             deps += conda_to_pip(item)
     return deps
+
+
+def has_module(venv, name):
+    p = subprocess.run([str(venv / BIN / PY), "-c", f"import {name}"], capture_output=True)
+    return p.returncode == 0
 
 
 def evaluate(log_text, parser):
@@ -138,7 +156,12 @@ def one(inst, work, log):
 
     venv = work / "venvs" / inst["instance_id"]
     shutil.rmtree(venv, ignore_errors=True)
-    code, text = run(["uv", "venv", "--seed", "--python", specs["python"], str(venv)], log=log)
+    python = specs["python"]
+    code, text = run(["uv", "venv", "--seed", "--python", python, str(venv)], log=log)
+    if code and tuple(map(int, python.split(".")[:2])) < (3, 8):
+        # uv has no CPython older than 3.8 for Windows; the oldest it has is the nearest.
+        python = rec["python_substituted"] = "3.8"
+        code, text = run(["uv", "venv", "--seed", "--python", python, str(venv)], log=log)
     if code:
         return {**rec, "outcome": "python_unavailable", "detail": text[-300:]}
     env = dict(os.environ, VIRTUAL_ENV=str(venv),
@@ -185,7 +208,13 @@ def one(inst, work, log):
     code, text = run(["git", "-C", str(src), "apply", "-v", str(patch_file)], log=log)
     if code:
         return {**rec, "outcome": "test_patch_failed", "detail": text[-300:]}
-    test_cmd = " ".join([specs["test_cmd"], *get_test_directives(inst)])
+    base_cmd = specs["test_cmd"]
+    if base_cmd.startswith("tox --current-env"):
+        # tox only wraps pytest here (sphinx), and picks its own Python on Windows.
+        base_cmd = "python -X dev -m pytest -rA"
+    if "pytest" in base_cmd and not has_module(venv, "pytest"):
+        run(uv_pip + ["pytest"], env=env, log=log)
+    test_cmd = " ".join([base_cmd, *get_test_directives(inst)])
     script = "\n".join([*specs.get("eval_commands", []), f"echo '{START}'", test_cmd, f"echo '{END}'", ""])
     parser = MAP_REPO_TO_PARSER[repo]
     f2p, p2p = json.loads(inst["FAIL_TO_PASS"]), json.loads(inst["PASS_TO_PASS"])
