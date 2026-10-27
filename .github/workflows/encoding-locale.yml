@@ -4,6 +4,7 @@ name: encoding-locale
 # under a non-English Windows. GitHub's runners are en-US (code page 1252) and can't reboot
 # to change that, so this sets the system locale inside a Windows container (its registry is
 # read when the container starts) and runs the probes there, with the runner as a control.
+# windows-2022: its image runs Docker's Windows containers (windows-2025's has no engine).
 on:
   workflow_dispatch:
     inputs:
@@ -22,7 +23,7 @@ permissions:
 
 jobs:
   probe:
-    runs-on: windows-2025
+    runs-on: windows-2022
     timeout-minutes: 60
     env:
       SILL_DOWNLOAD_TOKEN: ${{ secrets.SILL_DOWNLOAD_TOKEN }}
@@ -47,7 +48,7 @@ jobs:
       - name: A Windows container with the system locale set
         shell: pwsh
         run: |
-          $image = 'mcr.microsoft.com/windows/servercore:ltsc2025'
+          $image = 'mcr.microsoft.com/windows/servercore:ltsc2022'
           docker pull -q $image
           $set = "Set-WinSystemLocale -SystemLocale ${{ inputs.locale }}; Set-Culture ${{ inputs.locale }}; " +
                  "Set-WinUserLanguageList ${{ inputs.locale }} -Force; " +
