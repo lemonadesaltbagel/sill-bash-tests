@@ -35,7 +35,8 @@ DETACHED_PROCESS = 0x00000008
 CATEGORY_TITLES = {
     "argv": "Arguments to native programs", "paths": "Paths", "encoding": "Encoding",
     "crlf": "Line endings and bytes", "process": "Processes", "limits": "Size limits",
-    "scripts": "Running scripts", "tools": "Tools agents use", "errors": "Errors and identity",
+    "scripts": "Running scripts", "tools": "Tools agents use", "files": "Files",
+    "interactive": "Programs that prompt", "errors": "Errors and identity",
 }
 
 
