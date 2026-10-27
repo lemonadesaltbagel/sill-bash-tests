@@ -464,8 +464,10 @@ def main():
     ap.add_argument("--sill-bash", default="")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--tasks", default="")
-    ap.add_argument("--task-source", default="builtin", choices=["builtin", "swebench"],
-                    help="swebench: the SWE-bench tasks that work on Windows (lab/bench)")
+    ap.add_argument("--task-source", default="builtin", choices=["builtin", "swebench", "tbench"],
+                    help="swebench, tbench: the SWE-bench or Terminal-Bench tasks that work on Windows (lab/bench)")
+    ap.add_argument("--tbench-works", default="lab/bench/tbench-works.jsonl")
+    ap.add_argument("--tbench-tasks", default="tb/tasks", help="a Terminal-Bench 2.1 checkout's tasks folder")
     ap.add_argument("--swebench-works", default="lab/bench/works-verified.jsonl")
     ap.add_argument("--swebench-dataset", default="princeton-nlp/SWE-bench_Verified")
     ap.add_argument("--swebench-cache", default="", help="where repositories are cloned once")
@@ -506,6 +508,10 @@ def main():
         import swebench_tasks
         cache = a.swebench_cache or str(a.out.resolve().parent / "swebench-cache")
         source = swebench_tasks.tasks(a.swebench_works, a.swebench_dataset, cache)
+    elif a.task_source == "tbench":
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+        import tbench_tasks
+        source = tbench_tasks.tasks(a.tbench_works, a.tbench_tasks)
     else:
         source = TASKS
     tasks = [t for t in source if not wanted or t["id"] in wanted]
@@ -527,21 +533,26 @@ def main():
                 print(f"[{a.env}] {name}: SETUP FAILED {e!r}"[:300], flush=True)
                 continue
             task_env = {**env, **task["env"](str(work), env)} if task.get("env") else env
+            # A task may name its own working directory, prompt (with this run's paths) and
+            # time limit.
+            run_dir = Path(task["cwd"](str(work))) if task.get("cwd") else work
+            prompt = task["prompt_fn"](str(work)) if task.get("prompt_fn") else task["prompt"]
+            limit = int(task.get("timeout") or a.timeout)
             transcript = a.out / f"{name}.jsonl"
             if a.harness == "claude":
                 code, timed_out, secs = run_claude(
-                    claude, task["prompt"], work, task_env, a.env, a.model, a.max_turns, a.timeout,
+                    claude, prompt, run_dir, task_env, a.env, a.model, a.max_turns, limit,
                     transcript, a.out / f"{name}.stderr.txt")
             elif a.harness == "opencode":
                 code, timed_out, secs = run_opencode(
-                    opencode, task["prompt"], work, task_env, a.model, a.timeout,
+                    opencode, prompt, run_dir, task_env, a.model, limit,
                     transcript, a.out / f"{name}.stderr.txt")
             elif a.harness == "gemini":
                 code, timed_out, secs = run_gemini(
-                    gemini, task["prompt"], work, task_env, a.timeout, transcript, a.out / f"{name}.stderr.txt")
+                    gemini, prompt, run_dir, task_env, limit, transcript, a.out / f"{name}.stderr.txt")
             else:
                 code, timed_out, secs = run_codex(
-                    codex, task["prompt"], work, task_env, a.timeout, transcript, a.out / f"{name}.stderr.txt")
+                    codex, prompt, run_dir, task_env, limit, transcript, a.out / f"{name}.stderr.txt")
             redact_key([transcript, a.out / f"{name}.stderr.txt"], key)
             try:
                 passed, detail = task["check"](str(work))
