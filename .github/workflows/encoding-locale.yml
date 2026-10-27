@@ -1,0 +1,77 @@
+name: encoding-locale
+
+# Programs that write in the system's ANSI code page (Java since JEP 400, javac's messages)
+# under a non-English Windows. GitHub's runners are en-US (code page 1252) and can't reboot
+# to change that, so this sets the system locale inside a Windows container (its registry is
+# read when the container starts) and runs the probes there, with the runner as a control.
+on:
+  workflow_dispatch:
+    inputs:
+      sill_tag:
+        description: "sill release tag (empty = latest release; nightly = current source; run:ID = a build run's artifact)"
+        default: ""
+      locale:
+        description: "System locale for the container"
+        default: "zh-CN"
+      acp:
+        description: "Its ANSI code page (the container must report it)"
+        default: "936"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      SILL_DOWNLOAD_TOKEN: ${{ secrets.SILL_DOWNLOAD_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get sill
+        id: sill
+        shell: pwsh
+        run: |
+          $bash = pwsh scripts/get-sill.ps1 -Tag "${{ inputs.sill_tag }}"
+          "bash=$bash" | Add-Content $env:GITHUB_OUTPUT
+          "dir=$(Split-Path $bash)" | Add-Content $env:GITHUB_OUTPUT
+          & $bash --version
+      - name: Control (the runner, code page 1252)
+        shell: pwsh
+        run: |
+          python -X utf8 lab\encoding\java_probe.py --sill "${{ steps.sill.outputs.bash }}" --java-home "$env:JAVA_HOME_21_X64" `
+            --out java-probe-runner.json --report java-probe-runner.md
+      - name: A Windows container with the system locale set
+        shell: pwsh
+        run: |
+          $image = 'mcr.microsoft.com/windows/servercore:ltsc2025'
+          docker pull -q $image
+          $set = "Set-WinSystemLocale -SystemLocale ${{ inputs.locale }}; Set-Culture ${{ inputs.locale }}; " +
+                 "Set-WinUserLanguageList ${{ inputs.locale }} -Force; " +
+                 "`$k = 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage'; " +
+                 "Set-ItemProperty `$k ACP '${{ inputs.acp }}'; Set-ItemProperty `$k OEMCP '${{ inputs.acp }}'"
+          docker run --name setlocale $image powershell -NoProfile -Command $set
+          docker commit setlocale sill-locale | Out-Null
+          $acp = docker run --rm sill-locale powershell -NoProfile -Command "[Text.Encoding]::Default.CodePage"
+          "container ANSI code page: $acp"
+          if ("$acp".Trim() -ne '${{ inputs.acp }}') { throw "the container reports code page $acp" }
+      - name: Probe in the container
+        shell: pwsh
+        run: |
+          $py = Split-Path (Get-Command python).Source
+          docker run --rm -v "${PWD}:C:\w" -v "${{ steps.sill.outputs.dir }}:C:\sill" -v "${env:JAVA_HOME_21_X64}:C:\jdk" `
+            -v "${py}:C:\py" -w C:\w sill-locale `
+            C:\py\python.exe -X utf8 lab\encoding\java_probe.py --sill C:\sill\bash.exe --java-home C:\jdk `
+            --out java-probe-locale.json --report java-probe-locale.md
+          Get-Content java-probe-locale.md -Encoding utf8 | Add-Content $env:GITHUB_STEP_SUMMARY
+          "`n---`n" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content java-probe-runner.md -Encoding utf8 | Add-Content $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: java-probe
+          path: java-probe-*
+          if-no-files-found: warn
