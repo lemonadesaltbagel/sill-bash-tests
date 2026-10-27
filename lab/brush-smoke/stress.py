@@ -20,6 +20,9 @@ SCRIPTS = {
     "procsub-diff": "diff <(printf 'a\\nb\\n') <(printf 'a\\nc\\n'); echo rc=$?\n",
 }
 
+# Spawn latency: 50 runs of a small native program and of a bundled tool, in one shell.
+SPAWNS = "for i in $(seq 50); do whoami >/dev/null; done\n", "for i in $(seq 50); do cat </dev/null; done\n"
+
 
 def tree(pid):
     ps = (f"$all = Get-CimInstance Win32_Process; function t($p, $d) {{ $all | Where-Object "
@@ -57,6 +60,15 @@ def main():
             slowest = max(slowest, time.monotonic() - t0)
         total += hangs
         md.append(f"| {name} | {a.count} | {hangs} | {slowest:.1f} |")
+        print(md[-1], flush=True)
+    md += ["", "| spawn latency | per program (ms), median of 5 shells |", "|---|---|"]
+    for name, script in zip(("native (whoami)", "bundled tool (cat)"), SPAWNS):
+        times = []
+        for _ in range(5):
+            t0 = time.monotonic()
+            subprocess.run([a.shell], input=script.encode(), capture_output=True, timeout=300)
+            times.append((time.monotonic() - t0) * 1000 / 50)
+        md.append(f"| {name} | {sorted(times)[2]:.1f} |")
         print(md[-1], flush=True)
     md += ["", *details]
     open(a.out, "w", encoding="utf-8").write("\n".join(md))

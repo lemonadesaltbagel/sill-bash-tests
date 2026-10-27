@@ -1,0 +1,48 @@
+name: probe
+
+# Runs a bash snippet through sill (and Git Bash) on a fresh Windows runner and shows what
+# each printed: for looking into a behavior without a Windows machine at hand.
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "The bash to run (in an empty temporary directory)"
+        required: true
+      sill_tag:
+        description: "sill release tag (empty = latest release; nightly = current source; run:ID = a build run's artifact)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      SILL_DOWNLOAD_TOKEN: ${{ secrets.SILL_DOWNLOAD_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PROBE_SCRIPT: ${{ inputs.script }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get sill
+        id: sill
+        shell: pwsh
+        run: |
+          $bash = pwsh scripts/get-sill.ps1 -Tag "${{ inputs.sill_tag }}"
+          "bash=$bash" | Add-Content $env:GITHUB_OUTPUT
+      - name: Probe
+        shell: pwsh
+        run: |
+          foreach ($shell in @("${{ steps.sill.outputs.bash }}", 'C:\Program Files\Git\bin\bash.exe')) {
+            $dir = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid())
+            New-Item -ItemType Directory $dir | Out-Null
+            Push-Location $dir
+            [IO.File]::WriteAllText("$dir\probe.sh", $env:PROBE_SCRIPT)
+            "===== $shell"
+            & $shell probe.sh 2>&1 | ForEach-Object { "$_" }
+            "[exit $LASTEXITCODE]"
+            Pop-Location
+          }
