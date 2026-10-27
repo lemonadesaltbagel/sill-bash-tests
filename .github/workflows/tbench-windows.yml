@@ -1,0 +1,96 @@
+name: tbench-windows
+
+# Terminal-Bench 2.1 on native Windows, with no model: each task's reference bash solution
+# runs in each shell, and the task's own verifier checks the result
+# (lab/bench/tbench_windows.py). A task that passes in any shell is one the shells are then
+# compared on with real agents.
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated task names (empty = all)"
+        default: ""
+      shards:
+        description: "JSON list of I/N shards"
+        default: '["1/8","2/8","3/8","4/8","5/8","6/8","7/8","8/8"]'
+      sill_tag:
+        description: "sill release tag (empty = latest release; nightly = current source; run:ID = a build run's artifact)"
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  # Terminal-Bench 2.1 (github.com/harbor-framework/terminal-bench-2-1), pinned.
+  TBENCH_COMMIT: 7131e4375048a0e408a8fb404b5f499d726b695b
+
+jobs:
+  oracle:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shards) }}
+    runs-on: windows-2025
+    timeout-minutes: 330
+    env:
+      SILL_DOWNLOAD_TOKEN: ${{ secrets.SILL_DOWNLOAD_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get sill
+        id: sill
+        shell: pwsh
+        run: |
+          $bash = pwsh scripts/get-sill.ps1 -Tag "${{ inputs.sill_tag }}"
+          "bash=$bash" | Add-Content $env:GITHUB_OUTPUT
+      - name: Get Terminal-Bench
+        shell: pwsh
+        run: |
+          git init -q tb
+          git -C tb fetch -q --depth 1 https://github.com/harbor-framework/terminal-bench-2-1 $env:TBENCH_COMMIT
+          git -C tb checkout -q FETCH_HEAD
+          python -m pip install -q uv
+      - name: Reference solutions in each shell
+        shell: pwsh
+        run: |
+          $name = "${{ matrix.shard }}".Replace('/', 'of')
+          New-Item -ItemType Directory -Force out | Out-Null
+          python lab\bench\tbench_windows.py --tasks-dir tb\tasks --root D:\tb `
+            --shell "sill=${{ steps.sill.outputs.bash }}" --shell "gitbash=C:\Program Files\Git\bin\bash.exe" `
+            --only "${{ inputs.only }}" --shard "${{ matrix.shard }}" --out "out\tb-$name.jsonl"
+      - name: Name the results
+        if: always()
+        id: name
+        shell: pwsh
+        run: '"name=" + "tb-${{ matrix.shard }}".Replace("/", "of") | Add-Content $env:GITHUB_OUTPUT'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ${{ steps.name.outputs.name }}
+          path: out/
+          if-no-files-found: warn
+
+  report:
+    needs: oracle
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tb-*
+          path: results
+          merge-multiple: true
+      - run: python3 lab/bench/tbench_summary.py tbench-windows.md results/*.jsonl
+      - run: cat tbench-windows.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tbench-windows
+          path: |
+            tbench-windows.md
+            tbench-works.jsonl
