@@ -166,11 +166,31 @@ def provision(choco, log):
 provision.done = set()
 
 
-def environment(task, root, log):
-    """Builds the task's environment under `root`; returns (env, workdir) or raises."""
-    if root.exists():
-        subprocess.run(["cmd", "/c", "rmdir", "/s", "/q", str(root)], capture_output=True)
+def end_processes_under(root):
+    """Ends what a run left running from under `root` (a server, a test's child)."""
+    ps = (f"Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -like '{root}\\*' -or "
+          f"$_.CommandLine -like '*{root}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force "
+          f"-ErrorAction SilentlyContinue }}")
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, timeout=120)
+
+
+def fresh_root(base):
+    """A new, empty folder under `base` for one run (an earlier one may still be locked)."""
+    fresh_root.n += 1
+    root = base / f"r{fresh_root.n}"
+    for old in base.glob("r*"):
+        if old != root:
+            end_processes_under(old)
+            shutil.rmtree(old, ignore_errors=True)
     root.mkdir(parents=True)
+    return root
+
+
+fresh_root.n = 0
+
+
+def environment(task, root, log):
+    """Builds the task's environment in the empty folder `root`; returns (env, workdir) or raises."""
     for d in ("app", "logs/verifier", "logs/agent", "tests"):
         (root / d).mkdir(parents=True, exist_ok=True)
     rootp = root.as_posix()
@@ -259,14 +279,16 @@ def one(task, shells, root, log):
     provision(choco, log)
     rec["shells"] = {}
     for name, shell in shells:
+        run_root = fresh_root(root)
         try:
-            env, workdir = environment(task, root, log)
+            env, workdir = environment(task, run_root, log)
         except Exception as e:  # noqa: BLE001
             return {**rec, "outcome": "environment_failed", "detail": str(e)[:600]}
-        solve = root / "solution" / "solve.sh"
+        solve = run_root / "solution" / "solve.sh"
         solve.write_text(neutralize(solve.read_text(encoding="utf-8", errors="replace")), encoding="utf-8", newline="\n")
         code, secs, tail = sh(shell, solve, workdir, env, task.timeout("agent", 900) * 2, log)
-        reward, vtail = verify(task, root, workdir, env, log)
+        reward, vtail = verify(task, run_root, workdir, env, log)
+        end_processes_under(run_root)
         rec["shells"][name] = {"reward": reward, "solve_exit": code, "solve_seconds": round(secs),
                                "solve_tail": tail[-500:], "verify_tail": vtail[-800:]}
         print(f"  {task.name} [{name}]: reward={reward} solve_exit={code} ({round(secs)} s)", flush=True)
