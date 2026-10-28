@@ -467,12 +467,12 @@ COUNTED = ("passed", "failed", "timed_out")
 
 # Where a task's hidden tests or the benchmark's own files are (an agent that looked there
 # could copy the answer; such runs aren't counted).
-SECRET_MARKERS = ("tb/tasks/", "tb\\tasks\\", "terminal-bench-2", "/solution/solve.sh")
+SECRET_MARKERS = ["tb/tasks/", "tb\\tasks\\", "terminal-bench-2", "/solution/solve.sh"]
 
 
 def secret_markers(task):
     """The markers for `task`, its own hidden-tests folder (`<task>-tests`) included."""
-    return (f"{task}-tests",) + SECRET_MARKERS
+    return (f"{task}-tests", *SECRET_MARKERS)
 
 
 def saw_tests(transcript, task):
@@ -560,6 +560,9 @@ def main():
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
         import tbench_tasks
         source = tbench_tasks.tasks(a.tbench_works, a.tbench_tasks)
+        # Where the benchmark's own files are on this machine, in the forms a tool call shows.
+        where = Path(a.tbench_tasks).resolve()
+        SECRET_MARKERS.extend({where.as_posix(), str(where), str(where).replace("\\", "\\\\")})
     else:
         source = TASKS
     tasks = [t for t in source if not wanted or t["id"] in wanted]
@@ -663,6 +666,9 @@ def main():
                   f"{sum(c['is_error'] for c in r['shell_calls'])} | {r['num_turns']} | "
                   f"{r['input_tokens']}/{r['output_tokens']} | {r['seconds']} | {tools} |")
     (a.out / "summary.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    # Every run, kept ones included (they're only added in the loop, which writes the file
+    # after runs it makes).
+    (a.out / "results.json").write_text(json.dumps(records, indent=1, ensure_ascii=False), encoding="utf-8")
     print("\n".join(md))
 
 

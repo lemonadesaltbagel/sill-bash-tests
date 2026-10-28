@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tbench_windows as tw  # noqa: E402
 
 NOTE = ("\n\n---\nThis is a Windows machine; the task's directories are under {root} "
-        "(you're in {workdir}).")
+        "(you're in {workdir}). Solve the task yourself: don't look for its tests or a solution, "
+        "on this machine or online.")
 
 
 def tasks(works_file, tasks_dir):

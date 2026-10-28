@@ -63,9 +63,12 @@ jobs:
       - name: Get Terminal-Bench
         shell: pwsh
         run: |
-          git init -q tb
-          git -C tb fetch -q --depth 1 https://github.com/harbor-framework/terminal-bench-2-1 $env:TBENCH_COMMIT
-          git -C tb checkout -q FETCH_HEAD
+          # Outside the workspace, where an agent looking around its own folders won't come
+          # across it (the runner still recognizes a look there: run.py's SECRET_MARKERS).
+          $tb = Join-Path $env:RUNNER_TEMP 'cache-7f3a'
+          git init -q $tb
+          git -C $tb fetch -q --depth 1 https://github.com/harbor-framework/terminal-bench-2-1 $env:TBENCH_COMMIT
+          git -C $tb checkout -q FETCH_HEAD
           python -m pip install -q uv
       - name: Install the harness
         shell: pwsh
@@ -100,7 +103,7 @@ jobs:
           # An agent can end the runner (`taskkill` of a python.exe it took for its own); the
           # runner then picks up from its own results, redoing only the run it was in.
           for ($attempt = 1; $attempt -le 4; $attempt++) {
-            python lab/agent-e2e/run.py --task-source tbench --tbench-tasks tb\tasks --shard "${{ matrix.shard }}" --max-turns 150 `
+            python lab/agent-e2e/run.py --task-source tbench --tbench-tasks "$env:RUNNER_TEMP\cache-7f3a\tasks" --shard "${{ matrix.shard }}" --max-turns 150 `
               --env ${{ matrix.env }} --harness ${{ inputs.harness }} `
               --sill-bash "${{ steps.sill.outputs.bash }}" --out "D:\tbo\${{ matrix.env }}-$shard" `
               "--tasks=${{ inputs.tasks }}" --reps ${{ inputs.reps }} @previous
