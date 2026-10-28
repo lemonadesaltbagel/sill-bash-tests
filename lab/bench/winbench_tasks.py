@@ -292,6 +292,9 @@ def _git(root, *args):
 def setup_git_crlf_merge(root):
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "core.autocrlf", "false")
+    # As in a user's own repository: git knows who commits (a merge won't start otherwise).
+    _git(root, "config", "user.name", "Dev")
+    _git(root, "config", "user.email", "dev@example.com")
     _write(root, "config.ini", "[server]\r\nport=8080\r\nhost=localhost\r\n[log]\r\nlevel=info\r\n", newline="")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "base")
