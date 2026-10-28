@@ -519,8 +519,9 @@ def main():
     ap.add_argument("--swebench-cache", default="", help="where repositories are cloned once")
     ap.add_argument("--shard", default="", help="I/N: run every N-th task, starting with the I-th (1-based)")
     ap.add_argument("--reps", type=int, default=1)
-    ap.add_argument("--previous", default="",
-                    help="an earlier run's output folder: its counted runs are kept, the rest run again")
+    ap.add_argument("--previous", action="append", default=[],
+                    help="an earlier run's output folder (repeatable, newest first): its counted "
+                         "runs are kept, the rest run again")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=600)
@@ -574,9 +575,13 @@ def main():
     records = []
     api_errors_in_a_row = 0
     previous = {}
-    if a.previous and (Path(a.previous) / "results.json").exists():
-        for r in json.loads((Path(a.previous) / "results.json").read_text(encoding="utf-8")):
-            transcript = Path(a.previous) / f"{r['task']}-r{r['rep']}.jsonl"
+    for prev_dir in (Path(p) for p in a.previous):
+        if not (prev_dir / "results.json").exists():
+            continue
+        for r in json.loads((prev_dir / "results.json").read_text(encoding="utf-8")):
+            if (r["task"], r["rep"]) in previous:
+                continue  # A newer run's result for it is kept.
+            transcript = prev_dir / f"{r['task']}-r{r['rep']}.jsonl"
             if not transcript.exists():
                 continue  # Can't be checked for where it looked: run it again.
             r["saw_tests"] = r.get("saw_tests") or saw_tests(transcript, r["task"])
@@ -585,7 +590,8 @@ def main():
                 if transcript.resolve() != (a.out / transcript.name).resolve():
                     shutil.copy2(transcript, a.out / transcript.name)
                 previous[(r["task"], r["rep"])] = {**r, "outcome": outcome_of(r)}
-        print(f"[{a.env}] {len(previous)} runs kept from {a.previous}", flush=True)
+    if a.previous:
+        print(f"[{a.env}] {len(previous)} runs kept from {', '.join(a.previous)}", flush=True)
     for rep in range(a.reps):
         if api_errors_in_a_row >= 3:
             break

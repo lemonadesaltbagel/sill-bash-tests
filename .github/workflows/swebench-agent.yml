@@ -22,7 +22,7 @@ on:
         description: "sill release tag (empty = latest release; nightly = current source; run:ID = a build run's artifact)"
         default: ""
       resume:
-        description: "An earlier run of this workflow: keep its counted runs, run the rest (API errors, setup failures, missing)"
+        description: "Earlier runs of this workflow, comma-separated, newest first: keep their counted runs, run the rest (API errors, setup failures, runs that saw tests, missing)"
         default: ""
 
 permissions:
@@ -77,14 +77,22 @@ jobs:
         shell: pwsh
         run: |
           $name = "e2e-${{ matrix.env }}-${{ matrix.shard }}".Replace('/', 'of')
-          gh run download ${{ inputs.resume }} -R ${{ github.repository }} -n $name -D prev
-          if ($LASTEXITCODE) { Write-Output "no earlier results for $name"; $global:LASTEXITCODE = 0 }
+          $i = 0
+          foreach ($id in "${{ inputs.resume }}".Split(',')) {
+            gh run download $id.Trim() -R ${{ github.repository }} -n $name -D "prev$i"
+            if ($LASTEXITCODE) { Write-Output "no earlier results for $name in run $id"; $global:LASTEXITCODE = 0 }
+            $i++
+          }
       - name: Run tasks
         shell: pwsh
         run: |
           $shard = "${{ matrix.shard }}".Replace('/', 'of')
-          $prev = "prev\${{ matrix.env }}-$shard"
-          $previous = if (Test-Path "$prev\results.json") { @('--previous', $prev) } else { @() }
+          $previous = @()
+          foreach ($d in Get-ChildItem -Directory -Filter 'prev*' | Sort-Object { [int]($_.Name.Substring(4)) }) {
+            $p = Join-Path $d.FullName "${{ matrix.env }}-$shard"
+            if (Test-Path "$p\results.json") { $previous += @('--previous', $p) }
+          }
+          $earlier = $previous
           # An agent can end the runner (`taskkill` of a python.exe it took for its own); the
           # runner then picks up from its own results, redoing only the run it was in.
           for ($attempt = 1; $attempt -le 4; $attempt++) {
@@ -94,7 +102,8 @@ jobs:
               "--tasks=${{ inputs.tasks }}" --reps 1 @previous
             if (Test-Path "out\${{ matrix.env }}-$shard\summary.md") { break }
             Write-Output "the runner stopped early (attempt $attempt); resuming from its own results"
-            $previous = @('--previous', "out\${{ matrix.env }}-$shard")
+            # Its own results first (what it ran), then the earlier runs' (what it hadn't reached).
+            $previous = @('--previous', "out\${{ matrix.env }}-$shard") + $earlier
           }
           Get-Content "out\${{ matrix.env }}-$shard\summary.md" | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Name the results
