@@ -15,6 +15,9 @@ def main():
         f = d / "results.json"
         if f.exists():
             records += json.loads(f.read_text(encoding="utf-8"))
+    # Runs the model's API failed (no credit, an outage) say nothing about the shell.
+    dropped = [r for r in records if r.get("api_error")]
+    records = [r for r in records if not r.get("api_error")]
     envs = sorted({r["env"] for r in records}, key=["sill", "sill-mcp", "gitbash", "powershell"].index)
     tasks = list(dict.fromkeys(r["task"] for r in records))
 
@@ -34,7 +37,8 @@ def main():
                "gemini": "Gemini CLI (via LiteLLM)"}.get(
         next((r.get("harness") for r in records if r.get("harness")), "claude"), "?")
     md = [f"# Agent end-to-end: {harness} + DeepSeek (cheap model) on Windows", "",
-          "Each cell is tasks passed/runs, then shell tool calls and how many errored.", "",
+          "Each cell is tasks passed/runs, then shell tool calls and how many errored."
+          + (f" {len(dropped)} runs where the model's API failed aren't counted." if dropped else ""), "",
           "| task | " + " | ".join(envs) + " |", "|---" * (len(envs) + 1) + "|"]
     for t in tasks:
         md.append(f"| {t} | " + " | ".join(cell(by[(t, e)]) for e in envs) + " |")

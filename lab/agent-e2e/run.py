@@ -453,6 +453,10 @@ def parse_transcript(path):
         + usage.get("cache_creation_input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
         "cost_usd_reported": (final or {}).get("total_cost_usd"),
+        # The model's API failed (no credit, an outage): the run says nothing about the shell.
+        "api_error": (final or {}).get("api_error_status") or (
+            "api" if (final or {}).get("terminal_reason") == "api_error"
+            or str((final or {}).get("result", "")).startswith("API Error") else None),
     }
 
 
@@ -521,7 +525,10 @@ def main():
 
     a.out.mkdir(parents=True, exist_ok=True)
     records = []
+    api_errors_in_a_row = 0
     for rep in range(a.reps):
+        if api_errors_in_a_row >= 3:
+            break
         for task in tasks:
             name = f"{task['id']}-r{rep}"
             work = (a.out / "work" / name).resolve()
@@ -563,6 +570,12 @@ def main():
             rec.update({"claude": parse_transcript, "opencode": parse_opencode, "codex": parse_codex,
                         "gemini": parse_gemini}[a.harness](transcript))
             records.append(rec)
+            api_errors_in_a_row = api_errors_in_a_row + 1 if rec.get("api_error") else 0
+            if api_errors_in_a_row >= 3:
+                print(f"[{a.env}] stopping: the model's API failed 3 times in a row ({rec['api_error']}: "
+                      f"{rec.get('result_text', '')[:120]})", flush=True)
+                (a.out / "results.json").write_text(json.dumps(records, indent=1, ensure_ascii=False), encoding="utf-8")
+                break
             failed = sum(c["is_error"] for c in rec["shell_calls"])
             print(f"[{a.env}] {name}: {'PASS' if passed else 'FAIL'} shell={len(rec['shell_calls'])} "
                   f"failed={failed} turns={rec['num_turns']} {rec['seconds']}s  {detail[:120]}", flush=True)
