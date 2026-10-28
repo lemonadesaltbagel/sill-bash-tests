@@ -1,0 +1,46 @@
+name: winbench-oracle
+
+# The Windows-boundary tasks (lab/bench/winbench_tasks.py) with no model: each task's
+# reference bash solution in each shell, checked by the task's own check. A task no shell's
+# reference run passes is broken on this machine.
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated task ids (empty = all)"
+        default: ""
+      sill_tag:
+        description: "sill release tag (empty = latest release; nightly = current source; run:ID = a build run's artifact)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  oracle:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      SILL_DOWNLOAD_TOKEN: ${{ secrets.SILL_DOWNLOAD_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get sill
+        id: sill
+        shell: pwsh
+        run: |
+          $bash = pwsh scripts/get-sill.ps1 -Tag "${{ inputs.sill_tag }}"
+          "bash=$bash" | Add-Content $env:GITHUB_OUTPUT
+      - name: Reference solutions in each shell
+        shell: pwsh
+        run: |
+          python lab\bench\winbench_oracle.py --shell "sill=${{ steps.sill.outputs.bash }}" `
+            --shell "gitbash=C:\Program Files\Git\bin\bash.exe" --only "${{ inputs.only }}" --out winbench-oracle.jsonl
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: winbench-oracle
+          path: winbench-oracle.jsonl
