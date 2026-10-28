@@ -1,0 +1,144 @@
+name: winbench-agent
+
+# Real agents on the Windows-boundary tasks (lab/bench/winbench_tasks.py: native toolchains,
+# .bat and PowerShell, ports and held files, non-English text, CRLF, long paths), each with
+# sill, Git Bash or PowerShell as the shell. Every task's reference solution passes on the
+# runner (the winbench-oracle workflow). Manual only.
+on:
+  workflow_dispatch:
+    inputs:
+      harness:
+        description: "claude, opencode, codex or gemini"
+        default: "claude"
+      envs:
+        description: "JSON list of shells: sill, gitbash, powershell, sill-mcp (codex and gemini only)"
+        default: '["sill","gitbash","powershell"]'
+      shards:
+        description: "JSON list of I/N shards (each a job per shell)"
+        default: '["1/3","2/3","3/3"]'
+      tasks:
+        description: "Comma-separated task ids (empty = all)"
+        default: ""
+      reps:
+        description: "Runs per task"
+        default: "3"
+      sill_tag:
+        description: "sill release tag (empty = latest release; nightly = current source; run:ID = a build run's artifact)"
+        default: ""
+      resume:
+        description: "Earlier runs of this workflow, comma-separated, newest first: keep their counted runs, run the rest (API errors, setup failures, runs that saw tests, missing)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        env: ${{ fromJSON(inputs.envs) }}
+        shard: ${{ fromJSON(inputs.shards) }}
+    runs-on: windows-2025
+    timeout-minutes: 330
+    env:
+      SILL_DOWNLOAD_TOKEN: ${{ secrets.SILL_DOWNLOAD_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Get sill
+        id: sill
+        shell: pwsh
+        run: |
+          $bash = pwsh scripts/get-sill.ps1 -Tag "${{ inputs.sill_tag }}"
+          "bash=$bash" | Add-Content $env:GITHUB_OUTPUT
+      - name: Install the harness
+        shell: pwsh
+        run: |
+          switch ("${{ inputs.harness }}") {
+            'claude'   { npm install -g @anthropic-ai/claude-code@latest 2>&1 | Select-Object -Last 2; claude --version }
+            'opencode' { npm install -g opencode-ai@latest 2>&1 | Select-Object -Last 2; opencode --version }
+            { $_ -in 'codex', 'gemini' } {
+              if ($_ -eq 'codex') { npm install -g @openai/codex@latest 2>&1 | Select-Object -Last 2; codex --version }
+              else { npm install -g @google/gemini-cli@latest 2>&1 | Select-Object -Last 2; gemini --version }
+              python -m pip install -q "litellm[proxy]"
+              python scripts/lab-codex/patch-litellm.py
+              $litellm = Join-Path (Split-Path (Get-Command python).Source) 'Scripts\litellm.exe'
+              Start-Process -FilePath $litellm -ArgumentList '--config', "$PWD\scripts\lab-codex\litellm.yaml", '--port', '4000', '--host', '127.0.0.1' -WindowStyle Hidden
+              foreach ($i in 1..60) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:4000/health/liveliness -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 2 } }
+            }
+            default    { throw "unknown harness ${{ inputs.harness }}" }
+          }
+      - name: Previous results
+        if: inputs.resume != ''
+        shell: pwsh
+        run: |
+          $name = "e2e-${{ matrix.env }}-${{ matrix.shard }}".Replace('/', 'of')
+          $i = 0
+          foreach ($id in "${{ inputs.resume }}".Split(',')) {
+            gh run download $id.Trim() -R ${{ github.repository }} -n $name -D "prev$i"
+            if ($LASTEXITCODE) { Write-Output "no earlier results for $name in run $id"; $global:LASTEXITCODE = 0 }
+            $i++
+          }
+      - name: Run tasks
+        shell: pwsh
+        run: |
+          $shard = "${{ matrix.shard }}".Replace('/', 'of')
+          $previous = @()
+          foreach ($d in Get-ChildItem -Directory -Filter 'prev*' | Sort-Object { [int]($_.Name.Substring(4)) }) {
+            $p = Join-Path $d.FullName "${{ matrix.env }}-$shard"
+            if (Test-Path "$p\results.json") { $previous += @('--previous', $p) }
+          }
+          $earlier = $previous
+          # An agent can end the runner (`taskkill` of a python.exe it took for its own); the
+          # runner then picks up from its own results, redoing only the run it was in.
+          for ($attempt = 1; $attempt -le 4; $attempt++) {
+            python lab/agent-e2e/run.py --task-source winbench --shard "${{ matrix.shard }}" --timeout 900 --max-turns 100 `
+              --env ${{ matrix.env }} --harness ${{ inputs.harness }} `
+              --sill-bash "${{ steps.sill.outputs.bash }}" --out "D:\wbo\${{ matrix.env }}-$shard" `
+              "--tasks=${{ inputs.tasks }}" --reps ${{ inputs.reps }} @previous
+            if (Test-Path "D:\wbo\${{ matrix.env }}-$shard\summary.md") { break }
+            Write-Output "the runner stopped early (attempt $attempt); resuming from its own results"
+            # Its own results first (what it ran), then the earlier runs' (what it hadn't reached).
+            $previous = @('--previous', "D:\wbo\${{ matrix.env }}-$shard") + $earlier
+          }
+          New-Item -ItemType Directory -Force "out\${{ matrix.env }}-$shard" | Out-Null
+          Copy-Item "D:\wbo\${{ matrix.env }}-$shard\*.json*", "D:\wbo\${{ matrix.env }}-$shard\summary.md" "out\${{ matrix.env }}-$shard\"
+          Get-Content "out\${{ matrix.env }}-$shard\summary.md" | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Name the results
+        if: always()
+        shell: pwsh
+        run: '"name=" + "e2e-${{ matrix.env }}-${{ matrix.shard }}".Replace("/", "of") | Add-Content $env:GITHUB_OUTPUT'
+        id: name
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: ${{ steps.name.outputs.name }}
+          retention-days: 14
+          path: |
+            out/*/*.jsonl
+            out/*/results.json
+            out/*/summary.md
+
+  report:
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: e2e-*
+          path: results
+      - run: python3 lab/agent-e2e/compare.py report.md results/*/*
+      - run: cat report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: report
+          path: report.md

@@ -14,7 +14,8 @@ COUNTED = ("passed", "failed", "timed_out")
 
 # Where a task's hidden tests or the benchmark's own files are (an agent that looked there
 # could copy the answer; such runs aren't counted).
-SECRET_MARKERS = ["tb/tasks/", "tb\\tasks\\", "terminal-bench-2", "/solution/solve.sh"]
+SECRET_MARKERS = ["tb/tasks/", "tb\\tasks\\", "terminal-bench-2", "/solution/solve.sh",
+                  "winbench_tasks", "winbench_oracle", "sill-bash-tests/lab", "sill-bash-tests\\lab"]
 
 
 def secret_markers(task):

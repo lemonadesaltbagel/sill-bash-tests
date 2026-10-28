@@ -467,7 +467,8 @@ COUNTED = ("passed", "failed", "timed_out")
 
 # Where a task's hidden tests or the benchmark's own files are (an agent that looked there
 # could copy the answer; such runs aren't counted).
-SECRET_MARKERS = ["tb/tasks/", "tb\\tasks\\", "terminal-bench-2", "/solution/solve.sh"]
+SECRET_MARKERS = ["tb/tasks/", "tb\\tasks\\", "terminal-bench-2", "/solution/solve.sh",
+                  "winbench_tasks", "winbench_oracle", "sill-bash-tests/lab", "sill-bash-tests\\lab"]
 
 
 def secret_markers(task):
@@ -510,7 +511,7 @@ def main():
     ap.add_argument("--sill-bash", default="")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--tasks", default="")
-    ap.add_argument("--task-source", default="builtin", choices=["builtin", "swebench", "tbench"],
+    ap.add_argument("--task-source", default="builtin", choices=["builtin", "swebench", "tbench", "winbench"],
                     help="swebench, tbench: the SWE-bench or Terminal-Bench tasks that work on Windows (lab/bench)")
     ap.add_argument("--tbench-works", default="lab/bench/tbench-works.jsonl")
     ap.add_argument("--tbench-tasks", default="tb/tasks", help="a Terminal-Bench 2.1 checkout's tasks folder")
@@ -557,6 +558,10 @@ def main():
         import swebench_tasks
         cache = a.swebench_cache or str(a.out.resolve().parent / "swebench-cache")
         source = swebench_tasks.tasks(a.swebench_works, a.swebench_dataset, cache)
+    elif a.task_source == "winbench":
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
+        import winbench_tasks
+        source = winbench_tasks.TASKS
     elif a.task_source == "tbench":
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench"))
         import tbench_tasks
