@@ -21,6 +21,9 @@ on:
       sill_tag:
         description: "sill release tag (empty = latest release; nightly = current source; run:ID = a build run's artifact)"
         default: ""
+      resume:
+        description: "An earlier run of this workflow: keep its counted runs, run the rest (API errors, setup failures, missing)"
+        default: ""
 
 permissions:
   contents: read
@@ -69,14 +72,23 @@ jobs:
             }
             default    { throw "unknown harness ${{ inputs.harness }}" }
           }
+      - name: Previous results
+        if: inputs.resume != ''
+        shell: pwsh
+        run: |
+          $name = "e2e-${{ matrix.env }}-${{ matrix.shard }}".Replace('/', 'of')
+          gh run download ${{ inputs.resume }} -R ${{ github.repository }} -n $name -D prev
+          if ($LASTEXITCODE) { Write-Output "no earlier results for $name"; $global:LASTEXITCODE = 0 }
       - name: Run tasks
         shell: pwsh
         run: |
           $shard = "${{ matrix.shard }}".Replace('/', 'of')
+          $prev = "prev\${{ matrix.env }}-$shard"
+          $previous = if (Test-Path "$prev\results.json") { @('--previous', $prev) } else { @() }
           python lab/agent-e2e/run.py --task-source swebench --shard "${{ matrix.shard }}" --timeout 1500 --max-turns 100 `
             --env ${{ matrix.env }} --harness ${{ inputs.harness }} --swebench-cache "$env:RUNNER_TEMP\swecache" `
             --sill-bash "${{ steps.sill.outputs.bash }}" --out "out\${{ matrix.env }}-$shard" `
-            "--tasks=${{ inputs.tasks }}" --reps 1
+            "--tasks=${{ inputs.tasks }}" --reps 1 @previous
           Get-Content "out\${{ matrix.env }}-$shard\summary.md" | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Name the results
         if: always()

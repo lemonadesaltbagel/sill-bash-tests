@@ -460,6 +460,21 @@ def parse_transcript(path):
     }
 
 
+# Why a run ended. Only COUNTED ones say something about the shell; the others (the model's
+# API failed, the task's environment didn't build) are run again by --previous.
+COUNTED = ("passed", "failed", "timed_out")
+
+
+def outcome_of(rec):
+    if rec.get("outcome") == "setup_failed":
+        return "setup_failed"
+    if rec.get("api_error") or str(rec.get("result_text", "")).startswith("API Error"):
+        return "api_error"
+    if rec.get("passed"):
+        return "passed"
+    return "timed_out" if rec.get("timed_out") else "failed"
+
+
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
@@ -477,6 +492,8 @@ def main():
     ap.add_argument("--swebench-cache", default="", help="where repositories are cloned once")
     ap.add_argument("--shard", default="", help="I/N: run every N-th task, starting with the I-th (1-based)")
     ap.add_argument("--reps", type=int, default=1)
+    ap.add_argument("--previous", default="",
+                    help="an earlier run's output folder: its counted runs are kept, the rest run again")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--timeout", type=int, default=600)
@@ -526,11 +543,20 @@ def main():
     a.out.mkdir(parents=True, exist_ok=True)
     records = []
     api_errors_in_a_row = 0
+    previous = {}
+    if a.previous and (Path(a.previous) / "results.json").exists():
+        for r in json.loads((Path(a.previous) / "results.json").read_text(encoding="utf-8")):
+            if outcome_of(r) in COUNTED:
+                previous[(r["task"], r["rep"])] = {**r, "outcome": outcome_of(r)}
+        print(f"[{a.env}] {len(previous)} runs kept from {a.previous}", flush=True)
     for rep in range(a.reps):
         if api_errors_in_a_row >= 3:
             break
         for task in tasks:
             name = f"{task['id']}-r{rep}"
+            if (task["id"], rep) in previous:
+                records.append(previous[(task["id"], rep)])
+                continue
             work = (a.out / "work" / name).resolve()
             shutil.rmtree(work, ignore_errors=True)
             work.mkdir(parents=True)
@@ -538,6 +564,11 @@ def main():
                 task["setup"](str(work))
             except Exception as e:  # a task that can't be set up isn't the agent's failure
                 print(f"[{a.env}] {name}: SETUP FAILED {e!r}"[:300], flush=True)
+                records.append({"env": a.env, "harness": a.harness, "task": task["id"], "rep": rep,
+                                "passed": False, "outcome": "setup_failed", "detail": repr(e)[:500],
+                                "shell_calls": [], "tools_used": {}, "num_turns": 0, "input_tokens": 0,
+                                "output_tokens": 0, "seconds": 0})
+                (a.out / "results.json").write_text(json.dumps(records, indent=1, ensure_ascii=False), encoding="utf-8")
                 continue
             task_env = {**env, **task["env"](str(work), env)} if task.get("env") else env
             # A task may name its own working directory, prompt (with this run's paths) and
@@ -569,6 +600,7 @@ def main():
                    "exit_code": code, "timed_out": timed_out, "seconds": round(secs, 1)}
             rec.update({"claude": parse_transcript, "opencode": parse_opencode, "codex": parse_codex,
                         "gemini": parse_gemini}[a.harness](transcript))
+            rec["outcome"] = outcome_of(rec)
             records.append(rec)
             api_errors_in_a_row = api_errors_in_a_row + 1 if rec.get("api_error") else 0
             if api_errors_in_a_row >= 3:

@@ -4,8 +4,22 @@ Usage: python compare.py OUT.md DIR [DIR ...]   (each DIR holds a results.json)
 """
 import json
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
+
+
+# The same as run.py's (kept in step with it).
+COUNTED = ("passed", "failed", "timed_out")
+
+
+def outcome_of(rec):
+    if rec.get("outcome") == "setup_failed":
+        return "setup_failed"
+    if rec.get("api_error") or str(rec.get("result_text", "")).startswith("API Error"):
+        return "api_error"
+    if rec.get("passed"):
+        return "passed"
+    return "timed_out" if rec.get("timed_out") else "failed"
 
 
 def main():
@@ -15,9 +29,12 @@ def main():
         f = d / "results.json"
         if f.exists():
             records += json.loads(f.read_text(encoding="utf-8"))
-    # Runs the model's API failed (no credit, an outage) say nothing about the shell.
-    dropped = [r for r in records if r.get("api_error")]
-    records = [r for r in records if not r.get("api_error")]
+    # Why each run ended (run.py's outcome_of); runs the model's API failed (no credit, an
+    # outage) or whose task didn't set up say nothing about the shell and aren't counted.
+    for r in records:
+        r["outcome"] = outcome_of(r)
+    dropped = [r for r in records if r["outcome"] not in COUNTED]
+    records = [r for r in records if r["outcome"] in COUNTED]
     envs = sorted({r["env"] for r in records}, key=["sill", "sill-mcp", "gitbash", "powershell"].index)
     tasks = list(dict.fromkeys(r["task"] for r in records))
 
@@ -38,7 +55,9 @@ def main():
         next((r.get("harness") for r in records if r.get("harness")), "claude"), "?")
     md = [f"# Agent end-to-end: {harness} + DeepSeek (cheap model) on Windows", "",
           "Each cell is tasks passed/runs, then shell tool calls and how many errored."
-          + (f" {len(dropped)} runs where the model's API failed aren't counted." if dropped else ""), "",
+          + (" Not counted: " + ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in
+                                           sorted(Counter(r["outcome"] for r in dropped).items())) + "."
+             if dropped else ""), "",
           "| task | " + " | ".join(envs) + " |", "|---" * (len(envs) + 1) + "|"]
     for t in tasks:
         md.append(f"| {t} | " + " | ".join(cell(by[(t, e)]) for e in envs) + " |")
@@ -60,7 +79,7 @@ def main():
     md += ["", "## Failed tasks", ""]
     for r in records:
         if not r["passed"]:
-            md.append(f"- **{r['env']} / {r['task']}** (r{r['rep']}): {r['detail'][:300]}")
+            md.append(f"- **{r['env']} / {r['task']}** (r{r['rep']}, {r['outcome'].replace('_', ' ')}): {r['detail'][:300]}")
 
     md += ["", "## Shell calls that errored", ""]
     for e in envs:
