@@ -269,7 +269,11 @@ def verify(task, root, workdir, env, log):
     try:
         value = float(reward.read_text().strip() or 0)
     except (OSError, ValueError):
-        value = None
+        # A verifier that ran out of time is a failure, as Terminal-Bench scores it (the
+        # solution under test hung it); one that ended without a reward is broken.
+        value = 0.0 if code is None else None
+        if code is None:
+            tail += "\n[verifier timed out]"
     return value, tail
 
 
