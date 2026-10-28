@@ -55,8 +55,9 @@ def _port_open(port):
 
 
 def _processes_with(fragment):
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*" + fragment + "*' } | "
-          "ForEach-Object { $_.ProcessId }")
+    # (Not this query's own PowerShell, whose command line has the fragment too.)
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*" + fragment + "*' -and "
+          "$_.ProcessId -ne $PID -and $_.Name -notlike 'powershell*' } | ForEach-Object { $_.ProcessId }")
     _, out = _run(["powershell", "-NoProfile", "-Command", ps], None, timeout=60)
     return [l.strip() for l in out.splitlines() if l.strip().isdigit()]
 
@@ -104,9 +105,13 @@ def check_msvc_cmake(root):
         return False, "no Visual Studio on this machine"
     build = Path(root, "_check_build")
     shutil.rmtree(build, ignore_errors=True)
-    cmd = (f'call "{vc}" >nul && cmake -S . -B _check_build -G "NMake Makefiles" >nul && '
-           "cmake --build _check_build >nul && ctest --test-dir _check_build --output-on-failure")
-    code, out = _run(["cmd.exe", "/d", "/c", cmd], root, timeout=900)
+    # Through a .cmd file: cmd.exe reads a quoted path in a /c string its own way.
+    script = Path(root, "_check_build.cmd")
+    script.write_text(f'@call "{vc}" >nul\r\ncmake -S . -B _check_build -G "NMake Makefiles" >nul && '
+                      "cmake --build _check_build >nul && ctest --test-dir _check_build --output-on-failure\r\n",
+                      encoding="utf-8")
+    code, out = _run(["cmd.exe", "/d", "/c", str(script)], root, timeout=900)
+    script.unlink(missing_ok=True)
     shutil.rmtree(build, ignore_errors=True)
     ok = code == 0 and "100% tests passed" in out and ("passed" in log or "Passed" in log)
     return ok, f"ctest exit {code}; test.log has a pass: {'passed' in log or 'Passed' in log}; {out[-200:]}"
@@ -311,10 +316,11 @@ def check_git_crlf_merge(root):
     return ok, f"merge_commit={merged} crlf={crlf} content={content} clean={not status.strip()} file={t!r}"
 
 
-SOLVE_GIT_CRLF_MERGE = r"""git merge feature >/dev/null 2>&1
+SOLVE_GIT_CRLF_MERGE = r"""git merge feature
 printf '[server]\r\nport=9090\r\nhost=0.0.0.0\r\n[log]\r\nlevel=info\r\nfile=app.log\r\n' > config.ini
 git add config.ini
 git -c user.email=t@e -c user.name=t commit -qm "Merge feature: port 9090, log file; keep host 0.0.0.0"
+git log --oneline --graph -5
 """
 
 
