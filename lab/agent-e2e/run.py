@@ -465,9 +465,36 @@ def parse_transcript(path):
 COUNTED = ("passed", "failed", "timed_out")
 
 
+# Where a task's hidden tests or the benchmark's own files are (an agent that looked there
+# could copy the answer; such runs aren't counted).
+SECRET_MARKERS = ("tb/tasks/", "tb\\tasks\\", "terminal-bench-2", "/solution/solve.sh")
+
+
+def secret_markers(task):
+    """The markers for `task`, its own hidden-tests folder (`<task>-tests`) included."""
+    return (f"{task}-tests",) + SECRET_MARKERS
+
+
+def saw_tests(transcript, task):
+    """Whether any tool call in the transcript (a command, a file read or search) went where
+    the hidden tests or the benchmark's files are."""
+    try:
+        text = Path(transcript).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        if '"tool_use"' in line or '"function_call"' in line or '"toolCall' in line:
+            if any(m in line.replace("\\\\", "\\") for m in secret_markers(task)):
+                return True
+    return False
+
+
 def outcome_of(rec):
     if rec.get("outcome") == "setup_failed":
         return "setup_failed"
+    commands = " ".join(c.get("command", "") for c in rec.get("shell_calls", []))
+    if rec.get("saw_tests") or any(m in commands for m in secret_markers(rec.get("task", ""))):
+        return "saw_tests"
     if rec.get("api_error") or str(rec.get("result_text", "")).startswith("API Error"):
         return "api_error"
     if rec.get("passed"):
@@ -546,7 +573,14 @@ def main():
     previous = {}
     if a.previous and (Path(a.previous) / "results.json").exists():
         for r in json.loads((Path(a.previous) / "results.json").read_text(encoding="utf-8")):
+            transcript = Path(a.previous) / f"{r['task']}-r{r['rep']}.jsonl"
+            if not transcript.exists():
+                continue  # Can't be checked for where it looked: run it again.
+            r["saw_tests"] = r.get("saw_tests") or saw_tests(transcript, r["task"])
             if outcome_of(r) in COUNTED:
+                a.out.mkdir(parents=True, exist_ok=True)
+                if transcript.resolve() != (a.out / transcript.name).resolve():
+                    shutil.copy2(transcript, a.out / transcript.name)
                 previous[(r["task"], r["rep"])] = {**r, "outcome": outcome_of(r)}
         print(f"[{a.env}] {len(previous)} runs kept from {a.previous}", flush=True)
     for rep in range(a.reps):
@@ -600,6 +634,7 @@ def main():
                    "exit_code": code, "timed_out": timed_out, "seconds": round(secs, 1)}
             rec.update({"claude": parse_transcript, "opencode": parse_opencode, "codex": parse_codex,
                         "gemini": parse_gemini}[a.harness](transcript))
+            rec["saw_tests"] = saw_tests(transcript, task["id"])
             rec["outcome"] = outcome_of(rec)
             records.append(rec)
             api_errors_in_a_row = api_errors_in_a_row + 1 if rec.get("api_error") else 0

@@ -85,10 +85,17 @@ jobs:
           $shard = "${{ matrix.shard }}".Replace('/', 'of')
           $prev = "prev\${{ matrix.env }}-$shard"
           $previous = if (Test-Path "$prev\results.json") { @('--previous', $prev) } else { @() }
-          python lab/agent-e2e/run.py --task-source swebench --shard "${{ matrix.shard }}" --timeout 1500 --max-turns 100 `
-            --env ${{ matrix.env }} --harness ${{ inputs.harness }} --swebench-cache "$env:RUNNER_TEMP\swecache" `
-            --sill-bash "${{ steps.sill.outputs.bash }}" --out "out\${{ matrix.env }}-$shard" `
-            "--tasks=${{ inputs.tasks }}" --reps 1 @previous
+          # An agent can end the runner (`taskkill` of a python.exe it took for its own); the
+          # runner then picks up from its own results, redoing only the run it was in.
+          for ($attempt = 1; $attempt -le 4; $attempt++) {
+            python lab/agent-e2e/run.py --task-source swebench --shard "${{ matrix.shard }}" --timeout 1500 --max-turns 100 `
+              --env ${{ matrix.env }} --harness ${{ inputs.harness }} --swebench-cache "$env:RUNNER_TEMP\swecache" `
+              --sill-bash "${{ steps.sill.outputs.bash }}" --out "out\${{ matrix.env }}-$shard" `
+              "--tasks=${{ inputs.tasks }}" --reps 1 @previous
+            if (Test-Path "out\${{ matrix.env }}-$shard\summary.md") { break }
+            Write-Output "the runner stopped early (attempt $attempt); resuming from its own results"
+            $previous = @('--previous', "out\${{ matrix.env }}-$shard")
+          }
           Get-Content "out\${{ matrix.env }}-$shard\summary.md" | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Name the results
         if: always()

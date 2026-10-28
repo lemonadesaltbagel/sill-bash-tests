@@ -12,9 +12,22 @@ from pathlib import Path
 COUNTED = ("passed", "failed", "timed_out")
 
 
+# Where a task's hidden tests or the benchmark's own files are (an agent that looked there
+# could copy the answer; such runs aren't counted).
+SECRET_MARKERS = ("tb/tasks/", "tb\\tasks\\", "terminal-bench-2", "/solution/solve.sh")
+
+
+def secret_markers(task):
+    """The markers for `task`, its own hidden-tests folder (`<task>-tests`) included."""
+    return (f"{task}-tests",) + SECRET_MARKERS
+
+
 def outcome_of(rec):
     if rec.get("outcome") == "setup_failed":
         return "setup_failed"
+    commands = " ".join(c.get("command", "") for c in rec.get("shell_calls", []))
+    if rec.get("saw_tests") or any(m in commands for m in secret_markers(rec.get("task", ""))):
+        return "saw_tests"
     if rec.get("api_error") or str(rec.get("result_text", "")).startswith("API Error"):
         return "api_error"
     if rec.get("passed"):

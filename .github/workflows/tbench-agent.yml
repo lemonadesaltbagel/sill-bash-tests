@@ -97,10 +97,17 @@ jobs:
           $shard = "${{ matrix.shard }}".Replace('/', 'of')
           $prev = "prev\${{ matrix.env }}-$shard"
           $previous = if (Test-Path "$prev\results.json") { @('--previous', $prev) } else { @() }
-          python lab/agent-e2e/run.py --task-source tbench --tbench-tasks tb\tasks --shard "${{ matrix.shard }}" --max-turns 150 `
-            --env ${{ matrix.env }} --harness ${{ inputs.harness }} `
-            --sill-bash "${{ steps.sill.outputs.bash }}" --out "D:\tbo\${{ matrix.env }}-$shard" `
-            "--tasks=${{ inputs.tasks }}" --reps ${{ inputs.reps }} @previous
+          # An agent can end the runner (`taskkill` of a python.exe it took for its own); the
+          # runner then picks up from its own results, redoing only the run it was in.
+          for ($attempt = 1; $attempt -le 4; $attempt++) {
+            python lab/agent-e2e/run.py --task-source tbench --tbench-tasks tb\tasks --shard "${{ matrix.shard }}" --max-turns 150 `
+              --env ${{ matrix.env }} --harness ${{ inputs.harness }} `
+              --sill-bash "${{ steps.sill.outputs.bash }}" --out "D:\tbo\${{ matrix.env }}-$shard" `
+              "--tasks=${{ inputs.tasks }}" --reps ${{ inputs.reps }} @previous
+            if (Test-Path "D:\tbo\${{ matrix.env }}-$shard\summary.md") { break }
+            Write-Output "the runner stopped early (attempt $attempt); resuming from its own results"
+            $previous = @('--previous', "D:\tbo\${{ matrix.env }}-$shard")
+          }
           New-Item -ItemType Directory -Force "out\${{ matrix.env }}-$shard" | Out-Null
           Copy-Item "D:\tbo\${{ matrix.env }}-$shard\*.json*", "D:\tbo\${{ matrix.env }}-$shard\summary.md" "out\${{ matrix.env }}-$shard\"
           Get-Content "out\${{ matrix.env }}-$shard\summary.md" | Add-Content $env:GITHUB_STEP_SUMMARY

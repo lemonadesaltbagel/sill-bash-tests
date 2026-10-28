@@ -32,12 +32,11 @@ def task(t):
             tw.provision(choco, log)
             env, workdir = tw.environment(t, root, log)
         state.update(env=env, workdir=workdir, root=root)
-        # What the agent shouldn't see: the reference solution and the tests.
+        # What the agent mustn't see: the reference solution and the tests. Neither stays on
+        # disk; the check copies the tests in afresh, as Terminal-Bench does after the agent.
         import shutil
         shutil.rmtree(root / "solution", ignore_errors=True)
-        state["tests"] = root.parent / f"{t.name}-tests"
-        shutil.rmtree(state["tests"], ignore_errors=True)
-        shutil.move(str(root / "tests"), str(state["tests"]))
+        shutil.rmtree(root / "tests", ignore_errors=True)
 
     def cwd(work):
         return str(state["workdir"])
@@ -56,7 +55,7 @@ def task(t):
         import shutil
         root = state["root"]
         shutil.rmtree(root / "tests", ignore_errors=True)
-        shutil.copytree(state["tests"], root / "tests")
+        tw.copy_tree(t.path / "tests", root / "tests", root.as_posix())
         with open(root.parent / f"{t.name}-env.log", "a", encoding="utf-8") as log:
             reward, tail = tw.verify(t, root, state["workdir"], state["env"], log)
         tw.end_processes_under(root)
