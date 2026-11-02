@@ -58,6 +58,10 @@ jobs:
       - name: A Windows container with the zh-CN system locale
         shell: pwsh
         run: |
+          # Some runners have Docker's service stopped.
+          $svc = Get-Service docker -ErrorAction SilentlyContinue
+          if (-not $svc) { throw "no Docker service on this runner" }
+          if ($svc.Status -ne 'Running') { Start-Service docker; Start-Sleep 10 }
           $image = 'mcr.microsoft.com/windows/servercore:ltsc2022'
           docker pull -q $image
           $set = "Set-WinSystemLocale -SystemLocale zh-CN; Set-Culture zh-CN; Set-WinUserLanguageList zh-CN -Force; " +
