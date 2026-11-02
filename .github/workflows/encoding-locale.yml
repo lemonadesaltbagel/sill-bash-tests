@@ -70,9 +70,27 @@ jobs:
           Get-Content java-probe-locale.md -Encoding utf8 | Add-Content $env:GITHUB_STEP_SUMMARY
           "`n---`n" | Add-Content $env:GITHUB_STEP_SUMMARY
           Get-Content java-probe-runner.md -Encoding utf8 | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Build echoargs (MSVC)
+        shell: cmd
+        run: call lab\argv-live\build-echoargs.cmd "%GITHUB_WORKSPACE%\echoargs.exe"
+      - name: Conformance in the container (sill, sill with a windowless console, Git Bash)
+        shell: pwsh
+        run: |
+          $py = Split-Path (Get-Command python).Source
+          $run = "C:\py\python.exe -X utf8 conformance\run.py --echoargs C:\w\echoargs.exe --timeout 90"
+          docker run --rm -v "${PWD}:C:\w" -v "${{ steps.sill.outputs.dir }}:C:\sill" -v "${py}:C:\py" `
+            -v "C:\Program Files\Git:C:\git" -w C:\w sill-locale powershell -NoProfile -Command `
+            ("`$env:PATH = 'C:\py;C:\git\cmd;' + `$env:PATH; " +
+             "$run --shell sill=C:\sill\bash.exe --shell gitbash=C:\git\bin\bash.exe --out conformance-locale.json --report conformance-locale.md; " +
+             "$run --console hidden --shell sill=C:\sill\bash.exe --out conformance-locale-hidden.json --report conformance-locale-hidden.md")
+          "## Conformance, ${{ inputs.locale }} (code page ${{ inputs.acp }})" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content conformance-locale.md -Encoding utf8 -TotalCount 30 | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content conformance-locale-hidden.md -Encoding utf8 -TotalCount 30 | Add-Content $env:GITHUB_STEP_SUMMARY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: java-probe
-          path: java-probe-*
+          path: |
+            java-probe-*
+            conformance-locale*
           if-no-files-found: warn
