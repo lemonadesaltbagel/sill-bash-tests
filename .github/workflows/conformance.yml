@@ -30,7 +30,9 @@ jobs:
         id: sill
         shell: pwsh
         run: |
-          $bash = pwsh scripts/get-sill.ps1 -Tag "${{ inputs.sill_tag }}"
+          # In a folder with a space in its name, as under C:\Users\Jane Doe: make and
+          # anything else that starts sill by its path must cope.
+          $bash = pwsh scripts/get-sill.ps1 -Tag "${{ inputs.sill_tag }}" -Dest "$env:RUNNER_TEMP\sill install"
           "bash=$bash" | Add-Content $env:GITHUB_OUTPUT
           & $bash --version
       - name: Build echoargs (MSVC)
@@ -44,6 +46,13 @@ jobs:
             --shell "gitbash=C:\Program Files\Git\bin\bash.exe" `
             --echoargs "$env:RUNNER_TEMP\echoargs.exe" --out conformance.json --report conformance.md
           Get-Content conformance.md | Add-Content $env:GITHUB_STEP_SUMMARY
+      - name: Conformance suite, sill with a windowless console (as Node's windowsHide starts it)
+        shell: pwsh
+        run: |
+          python conformance\run.py --console hidden --shell "sill=${{ steps.sill.outputs.bash }}" `
+            --echoargs "$env:RUNNER_TEMP\echoargs.exe" --out conformance-hidden.json --report conformance-hidden.md
+          "## Windowless console" | Add-Content $env:GITHUB_STEP_SUMMARY
+          Get-Content conformance-hidden.md | Select-Object -First 30 | Add-Content $env:GITHUB_STEP_SUMMARY
       - name: Distribution checks (no Git on PATH)
         shell: pwsh
         run: |
@@ -66,6 +75,8 @@ jobs:
           path: |
             conformance.json
             conformance.md
+            conformance-hidden.json
+            conformance-hidden.md
             dist-check.txt
             smoke.json
             smoke.md
