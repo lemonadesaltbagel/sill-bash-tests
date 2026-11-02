@@ -529,6 +529,152 @@ SOLVE_CMD_NPM_SCRIPTS = r"""NODE_ENV=production node build.js
 """
 
 
+
+# --- Silent traps: a natural command gives plausible, wrong results, and nothing errors ----
+# (Git Bash rewrites arguments that look like Unix paths before a native program sees them;
+# Python writes the ANSI code page into a pipe on a non-English system.)
+
+def _tool(root, name, body):
+    _write(root, f"tools/{name}", "import json, sys, pathlib\n" + body)
+
+
+def setup_routes(root):
+    _tool(root, "add_route.py",
+          "path, handler = sys.argv[1], sys.argv[2]\nf = pathlib.Path('routes.json')\n"
+          "routes = json.loads(f.read_text()) if f.exists() else []\n"
+          "routes.append({'path': path, 'handler': handler})\nf.write_text(json.dumps(routes, indent=2))\n"
+          "print(f'added {path} -> {handler}')\n")
+    _write(root, "README.md", "Add a route with `python tools/add_route.py PATH HANDLER`; routes live in routes.json.\n")
+
+
+def check_routes(root):
+    try:
+        got = json.loads(_text(root, "routes.json") or "[]")
+    except json.JSONDecodeError:
+        return False, "routes.json isn't JSON"
+    want = [{"path": "/api/v2/orders", "handler": "OrdersHandler"}, {"path": "/health", "handler": "HealthHandler"}]
+    return got == want, f"routes={got}"
+
+
+SOLVE_ROUTES = r"""python tools/add_route.py /api/v2/orders OrdersHandler
+python tools/add_route.py /health HealthHandler
+"""
+
+
+RES_SITE = "/subscriptions/0000-1111/resourceGroups/rg-web/providers/Microsoft.Web/sites/shop"
+RES_GROUP = "/subscriptions/0000-1111/resourceGroups/rg-web"
+
+
+def setup_resource_tags(root):
+    _tool(root, "tag.py",
+          "rid, tag = sys.argv[1], sys.argv[2]\nk, v = tag.split('=', 1)\nf = pathlib.Path('tags.json')\n"
+          "tags = json.loads(f.read_text()) if f.exists() else {}\ntags.setdefault(rid, {})[k] = v\n"
+          "f.write_text(json.dumps(tags, indent=2))\nprint(f'tagged {rid}: {k}={v}')\n")
+    _write(root, "README.md", "`python tools/tag.py RESOURCE_ID KEY=VALUE` records a tag in tags.json "
+                              "(an offline stand-in for `az tag`).\n")
+
+
+def check_resource_tags(root):
+    try:
+        got = json.loads(_text(root, "tags.json") or "{}")
+    except json.JSONDecodeError:
+        return False, "tags.json isn't JSON"
+    want = {RES_SITE: {"env": "prod"}, RES_GROUP: {"owner": "team-a"}}
+    return got == want, f"tags={got}"
+
+
+SOLVE_RESOURCE_TAGS = f"""python tools/tag.py {RES_SITE} env=prod
+python tools/tag.py {RES_GROUP} owner=team-a
+"""
+
+
+def setup_client_config(root):
+    _tool(root, "configure.py",
+          "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--name', required=True)\n"
+          "ap.add_argument('--base-path', required=True)\nap.add_argument('--timeout', type=int, default=30)\n"
+          "a = ap.parse_args()\npathlib.Path('client.json').write_text(json.dumps(vars(a), indent=2))\n"
+          "print('wrote client.json')\n")
+    _write(root, "README.md", "Configure the API client with `python tools/configure.py --name NAME --base-path PATH "
+                              "[--timeout SECONDS]`.\n")
+
+
+def check_client_config(root):
+    try:
+        got = json.loads(_text(root, "client.json") or "{}")
+    except json.JSONDecodeError:
+        return False, "client.json isn't JSON"
+    ok = got.get("name") == "orders" and got.get("base_path") == "/v2/" and got.get("timeout") == 10
+    return ok, f"client.json={got}"
+
+
+SOLVE_CLIENT_CONFIG = r"""python tools/configure.py --name=orders --base-path=/v2/ --timeout=10
+"""
+
+
+def setup_backup_plan(root):
+    _tool(root, "plan_backup.py",
+          "spec = sys.argv[1]\nhost, _, path = spec.partition(':')\n"
+          "pathlib.Path('plan.json').write_text(json.dumps({'host': host, 'path': path}, indent=2))\n"
+          "print(f'backup to {host} at {path}')\n")
+    _write(root, "README.md", "`python tools/plan_backup.py HOST:PATH` writes the backup plan (rsync-style target).\n")
+
+
+def check_backup_plan(root):
+    try:
+        got = json.loads(_text(root, "plan.json") or "{}")
+    except json.JSONDecodeError:
+        return False, "plan.json isn't JSON"
+    return got == {"host": "backup", "path": "/var/data/2026"}, f"plan={got}"
+
+
+SOLVE_BACKUP_PLAN = r"""python tools/plan_backup.py backup:/var/data/2026
+"""
+
+
+ACCESS_LOG = "".join(f"GET {p} 200\n" for p in
+                     ["/members/1", "/members/22", "/members/abc", "/orders/5", "/members/333/orders", "/health", "/members/7"])
+
+
+def setup_route_count(root):
+    _write(root, "access.log", ACCESS_LOG)
+    _tool(root, "count_matches.py",
+          "import re\npattern, log = sys.argv[1], sys.argv[2]\n"
+          "n = sum(1 for l in open(log) if re.fullmatch(pattern, l.split()[1]))\nprint(n)\n")
+    _write(root, "README.md", "`python tools/count_matches.py REGEX LOGFILE` counts requests whose path matches REGEX "
+                              "exactly.\n")
+
+
+def check_route_count(root):
+    t = (_text(root, "count.txt") or "").strip()
+    return t == "3", f"count.txt={t!r} (want 3: /members/1, /members/22, /members/7)"
+
+
+SOLVE_ROUTE_COUNT = r"""python tools/count_matches.py '/members/[0-9]+' access.log > count.txt
+"""
+
+
+def setup_zh_summary(root):
+    _tool(root, "summary.py",
+          "rows = [('张伟', 150), ('李娜', 95), ('王芳', 200)]\n"
+          "print('销售汇总')\nfor n, v in rows:\n    print(f'{n}: {v}')\n")
+    _write(root, "README.md", "All text files in this project are UTF-8.\n")
+
+
+def check_zh_summary(root):
+    b = _read(root, "summary.txt")
+    if b is None:
+        return False, "summary.txt missing"
+    try:
+        t = b.decode("utf-8")
+    except UnicodeDecodeError:
+        return False, "summary.txt isn't UTF-8 (written in the system's code page?)"
+    lines = [l for l in t.replace("\r\n", "\n").split("\n") if l]
+    return lines == ["销售汇总", "张伟: 150", "李娜: 95", "王芳: 200"], f"got={lines}"
+
+
+SOLVE_ZH_SUMMARY = r"""python tools/summary.py > summary.txt
+"""
+
 TASKS = [
     {"id": "msvc-cmake-tests", "setup": setup_msvc_cmake, "check": check_msvc_cmake, "solution": SOLVE_MSVC_CMAKE,
      "timeout": 1500,
@@ -585,4 +731,25 @@ TASKS = [
      "solution": SOLVE_CMD_NPM_SCRIPTS,
      "prompt": "Run this project's production build (the build script in package.json) so that "
                "dist/build.json records the production environment."},
+    {"id": "trap-routes", "setup": setup_routes, "check": check_routes, "solution": SOLVE_ROUTES, "trap": True,
+     "prompt": "Using the project's tool (see README), register two routes: /api/v2/orders handled by "
+               "OrdersHandler, then /health handled by HealthHandler."},
+    {"id": "trap-resource-tags", "setup": setup_resource_tags, "check": check_resource_tags,
+     "solution": SOLVE_RESOURCE_TAGS, "trap": True,
+     "prompt": f"Using tools/tag.py (see README), tag the web app {RES_SITE} with env=prod, and its resource "
+               f"group {RES_GROUP} with owner=team-a."},
+    {"id": "trap-client-config", "setup": setup_client_config, "check": check_client_config,
+     "solution": SOLVE_CLIENT_CONFIG, "trap": True,
+     "prompt": "Configure the API client (see README) with the name orders, the base path /v2/ and a 10 second "
+               "timeout."},
+    {"id": "trap-backup-plan", "setup": setup_backup_plan, "check": check_backup_plan,
+     "solution": SOLVE_BACKUP_PLAN, "trap": True,
+     "prompt": "Write the backup plan (see README) for host backup, path /var/data/2026."},
+    {"id": "trap-route-count", "setup": setup_route_count, "check": check_route_count,
+     "solution": SOLVE_ROUTE_COUNT, "trap": True,
+     "prompt": "Using the project's tool (see README), count the requests in access.log whose path is a member "
+               "by numeric id, like /members/42 (the regex /members/[0-9]+), and save the number to count.txt."},
+    {"id": "trap-zh-summary", "setup": setup_zh_summary, "check": check_zh_summary,
+     "solution": SOLVE_ZH_SUMMARY, "trap": True,
+     "prompt": "Run tools/summary.py and save what it prints to summary.txt."},
 ]
