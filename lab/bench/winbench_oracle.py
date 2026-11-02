@@ -29,6 +29,10 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--only", default="")
     a = ap.parse_args()
+    import os
+    for name in ("PYTHONUTF8", "PYTHONIOENCODING"):  # as on a user's machine (see run.py)
+        os.environ.pop(name, None)
+    sys.stdout.reconfigure(encoding="utf-8")
     shells = [tuple(s.split("=", 1)) for s in a.shell]
     only = set(filter(None, a.only.split(",")))
     base = Path(tempfile.mkdtemp(prefix="wb-"))

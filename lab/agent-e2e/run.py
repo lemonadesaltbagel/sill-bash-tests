@@ -505,6 +505,10 @@ def outcome_of(rec):
 
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
+    # The agent's programs see the machine as a user's would: Python's UTF-8 mode (set for
+    # this runner's own sake in the workflows) would hide how Python writes to a pipe there.
+    for name in ("PYTHONUTF8", "PYTHONIOENCODING"):
+        os.environ.pop(name, None)
     ap = argparse.ArgumentParser()
     ap.add_argument("--env", required=True, choices=["sill", "gitbash", "powershell", "sill-mcp"])
     ap.add_argument("--harness", default="claude", choices=["claude", "opencode", "codex", "gemini"])

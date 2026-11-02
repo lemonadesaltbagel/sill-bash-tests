@@ -108,7 +108,7 @@ jobs:
               -v "${py}:${py}" -v "C:\Program Files\Git:C:\Program Files\Git" `
               -v "C:\Program Files\nodejs:C:\Program Files\nodejs" -v "C:\Program Files\dotnet:C:\Program Files\dotnet" `
               -e "HOST_PYTHON=$py" -e "HARNESS=${{ inputs.harness }}" -e "RUN_ARGS=$($runArgs -join '|')" `
-              -e DEEPSEEK_API_KEY -e PYTHONUTF8=1 `
+              -e DEEPSEEK_API_KEY `
               sill-zh powershell -NoProfile -ExecutionPolicy Bypass -File lab\bench\container_run.ps1
             if (Test-Path "D:\wbo\${{ matrix.env }}-$shard\summary.md") { break }
             Write-Output "the runner stopped early (attempt $attempt); resuming from its own results"

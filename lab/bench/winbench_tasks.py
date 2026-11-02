@@ -742,13 +742,6 @@ TASKS = [
      "solution": SOLVE_CLIENT_CONFIG, "trap": True,
      "prompt": "Configure the API client (see README) with the name orders, the base path /v2/ and a 10 second "
                "timeout."},
-    {"id": "trap-backup-plan", "setup": setup_backup_plan, "check": check_backup_plan,
-     "solution": SOLVE_BACKUP_PLAN, "trap": True,
-     "prompt": "Write the backup plan (see README) for host backup, path /var/data/2026."},
-    {"id": "trap-route-count", "setup": setup_route_count, "check": check_route_count,
-     "solution": SOLVE_ROUTE_COUNT, "trap": True,
-     "prompt": "Using the project's tool (see README), count the requests in access.log whose path is a member "
-               "by numeric id, like /members/42 (the regex /members/[0-9]+), and save the number to count.txt."},
     {"id": "trap-zh-summary", "setup": setup_zh_summary, "check": check_zh_summary,
      "solution": SOLVE_ZH_SUMMARY, "trap": True,
      "prompt": "Run tools/summary.py and save what it prints to summary.txt."},
